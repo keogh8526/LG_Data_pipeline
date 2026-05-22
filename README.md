@@ -62,6 +62,12 @@ docker exec lg_ollama ollama pull qwen2.5:32b
 docker exec lg_ollama ollama pull bge-m3
 ```
 
+Neo4j 컨테이너가 뜨면 제약조건과 벡터 인덱스를 1회 초기화한다 (구
+PostgreSQL `init-db`를 대체 — DECISIONS D-006):
+```bash
+uv run python -m src.graph.etl init-schema
+```
+
 ## 파이프라인 단계
 
 | Step | 모듈 | 산출물 |

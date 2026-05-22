@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass, field
 
 import pandas as pd
+import typer
 
 from src.utils.logging import get_logger
 
@@ -229,3 +230,27 @@ def load_graph(driver: object, batch: GraphBatch) -> None:
         session.run(LOAD_CHANGED_TO, rows=batch.changed_to)
         session.run(LOAD_USES_FORM, rows=batch.uses_form)
     log.info("graph.loaded", parts=len(batch.parts), events=len(batch.change_events))
+
+
+app = typer.Typer(help="Step 6 — Neo4j schema and ETL.")
+
+
+@app.command("init-schema")
+def init_schema_cmd(
+    embedding_dim: int = typer.Option(1024, help="Vector index dimensionality."),
+) -> None:
+    """Create Neo4j constraints and native vector indexes.
+
+    Replaces the removed PostgreSQL ``init-db`` step (DECISIONS D-006). Requires
+    a running Neo4j — configure connection via the ``NEO4J_*`` env vars.
+    """
+    driver = make_driver()
+    try:
+        init_schema(driver, embedding_dim=embedding_dim)
+        typer.echo(f"Neo4j schema initialized (embedding_dim={embedding_dim}).")
+    finally:
+        driver.close()  # type: ignore[attr-defined]
+
+
+if __name__ == "__main__":
+    app()
