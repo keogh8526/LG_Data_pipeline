@@ -1,30 +1,29 @@
-"""Tests for the Step 7 hybrid-search helpers."""
+"""Tests for the Step 7 embedding and Neo4j hybrid-search helpers."""
 
 from __future__ import annotations
 
 import pytest
 
 from src.embed.embedder import embed_texts, embedding_enabled
-from src.embed.search import apply_version_weight, reciprocal_rank_fusion
+from src.embed.search import SearchHit, apply_version_weight
 
 
-def test_rrf_fuses_rankings() -> None:
-    fused = reciprocal_rank_fusion(["a", "b", "c"], ["b", "a", "d"])
-    ids = [doc_id for doc_id, _ in fused]
-    # 'a' and 'b' appear in both lists -> ranked above singletons.
-    assert set(ids[:2]) == {"a", "b"}
+def _hits() -> list[SearchHit]:
+    return [
+        SearchHit(event_id="a", score=0.5, form_version="v1.2"),
+        SearchHit(event_id="b", score=0.5, form_version="96col"),
+    ]
 
 
 def test_version_weight_boosts_preferred() -> None:
-    hits = [("a", 0.5), ("b", 0.5)]
-    versions = {"a": "v1.2", "b": "96col"}
-    rescored = dict(apply_version_weight(hits, versions, "v1.2"))
-    assert rescored["a"] > rescored["b"]
+    rescored = apply_version_weight(_hits(), preferred_version="v1.2")
+    assert rescored[0].event_id == "a"
+    assert rescored[0].score > rescored[1].score
 
 
 def test_version_weight_noop_when_none() -> None:
-    hits = [("a", 0.5)]
-    assert apply_version_weight(hits, {"a": "v1.2"}, None) == hits
+    hits = _hits()
+    assert apply_version_weight(hits, preferred_version=None) == hits
 
 
 def test_embedding_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

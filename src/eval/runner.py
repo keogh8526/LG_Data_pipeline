@@ -138,7 +138,7 @@ def retrieval(top_k: int = typer.Option(10, help="Cutoff rank.")) -> None:
     A stub retriever is used until Steps 6-7 are wired in (see TODO).
     """
     dataset = load_jsonl(EVAL_DIR / "retrieval_eval.jsonl")
-    # TODO(real-data): inject the real Qdrant/graph retriever here.
+    # TODO(real-data): inject the real Neo4j hybrid-search retriever here.
     metrics = evaluate_retrieval(dataset, retrieve=lambda _q: [], k=top_k)
     typer.echo(json.dumps(metrics, indent=2))
 

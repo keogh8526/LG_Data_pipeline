@@ -1,33 +1,18 @@
-"""Step 7 — Qdrant collection management and hybrid search.
+"""Step 7 — Neo4j hybrid search (vector + graph in a single Cypher).
 
-Dense (embedding) and sparse (BM25) results are fused with Reciprocal Rank
-Fusion. The VersionRAG pattern up-weights hits whose ``form_version`` matches
-the query's preferred version.
+For the MVP, Neo4j is the single store: native vector indexes provide
+similarity search and are combined with graph traversal in one query — no
+app-layer fusion. The VersionRAG pattern up-weights hits whose ``form_version``
+matches the query's preferred version.
 """
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.utils.logging import get_logger
 
 log = get_logger(__name__)
-
-COLLECTION_NAME = "change_events_text"
-
-# Metadata payload fields stored alongside each vector.
-PAYLOAD_FIELDS: tuple[str, ...] = (
-    "event_id",
-    "part_no",
-    "model_code",
-    "form_version",
-    "grade",
-    "region",
-    "change_type",
-    "source_file",
-    "created_at",
-)
 
 
 @dataclass
@@ -36,84 +21,89 @@ class SearchHit:
 
     event_id: str
     score: float
-    payload: dict[str, object]
+    change_point: str | None = None
+    form_version: str | None = None
+    related: dict[str, object] = field(default_factory=dict)
 
 
-def reciprocal_rank_fusion(
-    dense_ranking: list[str],
-    sparse_ranking: list[str],
-    k: int = 60,
-) -> list[tuple[str, float]]:
-    """Fuse two ranked id lists with Reciprocal Rank Fusion.
-
-    Args:
-        dense_ranking: Ids ordered best-first from dense search.
-        sparse_ranking: Ids ordered best-first from sparse (BM25) search.
-        k: RRF dampening constant.
-
-    Returns:
-        ``(id, fused_score)`` pairs ordered best-first.
-    """
-    scores: dict[str, float] = {}
-    for ranking in (dense_ranking, sparse_ranking):
-        for rank, doc_id in enumerate(ranking):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
-    return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+# Hybrid retrieval: native vector search expanded with a 1-hop graph pattern,
+# all in one Cypher query. ``$index`` is a vector index name, ``$vec`` the
+# query embedding, ``$k`` the cutoff.
+HYBRID_QUERY = """
+CALL db.index.vector.queryNodes($index, $k, $vec)
+YIELD node AS e, score
+OPTIONAL MATCH (e)-[:CHANGED_FROM]->(p_from:Part)
+OPTIONAL MATCH (e)-[:CHANGED_TO]->(p_to:Part)
+OPTIONAL MATCH (e)-[:BELONGS_TO]->(m:Model)
+RETURN e.event_id AS event_id, score,
+       e.change_point AS change_point, e.form_version AS form_version,
+       p_from.part_no AS base_part_no, p_to.part_no AS new_part_no,
+       m.model_code AS model_code
+ORDER BY score DESC
+"""
 
 
 def apply_version_weight(
-    hits: list[tuple[str, float]],
-    hit_versions: dict[str, str],
+    hits: list[SearchHit],
     preferred_version: str | None,
     boost: float = 1.2,
-) -> list[tuple[str, float]]:
+) -> list[SearchHit]:
     """Up-weight hits whose form version matches the preferred version.
 
     Args:
-        hits: ``(id, score)`` pairs.
-        hit_versions: Map from id to its ``form_version``.
+        hits: Search hits to re-score.
         preferred_version: The version to boost, or None for no boost.
         boost: Multiplicative boost factor.
 
     Returns:
-        Re-scored and re-sorted ``(id, score)`` pairs.
+        Re-scored, re-sorted hits.
     """
     if preferred_version is None:
         return hits
-    rescored = [
-        (doc_id, score * boost if hit_versions.get(doc_id) == preferred_version else score)
-        for doc_id, score in hits
-    ]
-    return sorted(rescored, key=lambda kv: kv[1], reverse=True)
+    for hit in hits:
+        if hit.form_version == preferred_version:
+            hit.score *= boost
+    return sorted(hits, key=lambda h: h.score, reverse=True)
 
 
-def make_client() -> object:
-    """Create a Qdrant client from environment variables.
-
-    Returns:
-        A ``QdrantClient`` instance.
-    """
-    from qdrant_client import QdrantClient
-
-    host = os.environ.get("QDRANT_HOST", "localhost")
-    port = int(os.environ.get("QDRANT_PORT", "6333"))
-    return QdrantClient(host=host, port=port)
-
-
-def ensure_collection(client: object, dim: int) -> None:
-    """Create the change-events collection if it does not exist.
+def hybrid_search(
+    driver: object,
+    query_vector: list[float],
+    index: str = "change_point_vec",
+    top_k: int = 10,
+    preferred_version: str | None = None,
+) -> list[SearchHit]:
+    """Run a hybrid vector + graph search against Neo4j.
 
     Args:
-        client: A Qdrant client.
-        dim: Dense vector dimensionality.
-    """
-    from qdrant_client.models import Distance, VectorParams
+        driver: A Neo4j driver.
+        query_vector: The dense query embedding.
+        index: Vector index name to query.
+        top_k: Number of results to return.
+        preferred_version: Optional form version to up-weight (VersionRAG).
 
-    existing = {c.name for c in client.get_collections().collections}  # type: ignore[attr-defined]
-    if COLLECTION_NAME in existing:
-        return
-    client.create_collection(  # type: ignore[attr-defined]
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
-    )
-    log.info("embed.collection_created", name=COLLECTION_NAME, dim=dim)
+    Returns:
+        Ranked :class:`SearchHit` results.
+    """
+    hits: list[SearchHit] = []
+    with driver.session() as session:  # type: ignore[attr-defined]
+        result = session.run(
+            HYBRID_QUERY, index=index, k=top_k, vec=query_vector
+        )
+        for record in result:
+            hits.append(
+                SearchHit(
+                    event_id=record["event_id"],
+                    score=float(record["score"]),
+                    change_point=record["change_point"],
+                    form_version=record["form_version"],
+                    related={
+                        "base_part_no": record["base_part_no"],
+                        "new_part_no": record["new_part_no"],
+                        "model_code": record["model_code"],
+                    },
+                )
+            )
+    hits = apply_version_weight(hits, preferred_version)
+    log.info("search.hybrid", index=index, results=len(hits))
+    return hits

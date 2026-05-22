@@ -1,8 +1,8 @@
 """Step 9 — OG-RAG hypergraph construction (interface skeleton).
 
-Builds an ontology-grounded hypergraph from the v1.2 ontology, the Neo4j graph,
-and the Qdrant embeddings. Each hyperedge represents one ontology entity
-instance together with its properties and relations.
+Builds an ontology-grounded hypergraph from the v1.2 ontology and the Neo4j
+graph (graph + native vector index). Each hyperedge represents one ontology
+entity instance together with its properties and relations.
 
 This module is an interface skeleton. The construction logic depends on real
 data and is deferred — see DECISIONS D-003. Reference structure:
@@ -44,14 +44,13 @@ class HyperGraph:
 
 def build_hypergraph(
     neo4j_driver: object,
-    qdrant_client: object,
     max_cardinality: int = 8,
 ) -> HyperGraph:
-    """Construct the OG-RAG hypergraph from graph and vector stores.
+    """Construct the OG-RAG hypergraph from the Neo4j graph + vector index.
 
     Args:
-        neo4j_driver: A Neo4j driver providing the property graph.
-        qdrant_client: A Qdrant client providing text embeddings.
+        neo4j_driver: A Neo4j driver providing the property graph and the
+            native vector index.
         max_cardinality: Upper bound on member nodes per hyperedge.
 
     Returns:

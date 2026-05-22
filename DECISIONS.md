@@ -32,9 +32,37 @@
 ## D-004: 무거운 ML 의존성은 optional + lazy 로딩
 - 날짜: 2026-05-22
 - 컨텍스트: `sentence-transformers`(torch ~2GB), bge-m3 가중치(~2.3GB)는
-  런타임 다운로드. `outlines`도 torch 의존이 무거움.
-- 결정: `sentence-transformers`/`openai`는 `pyproject.toml`의 optional extra로
-  분리. 임베딩 모델 로드는 lazy + `ENABLE_EMBEDDING` 플래그로 게이트. `outlines`는
-  미도입하고 OpenAI Structured Outputs(순수 HTTP) 인터페이스만 사용.
+  런타임 다운로드.
+- 결정: `sentence-transformers`/`openai`/`outlines`는 `pyproject.toml`의 optional
+  extra로 분리. 임베딩 로드는 lazy + `ENABLE_EMBEDDING` 플래그로 게이트.
+- 갱신(D-006): `outlines`는 미도입 → optional extra(`structured`)로 도입으로 변경.
 - 영향: Step 7, Step 10.
 - 재검토 조건: 운영 환경 임베딩 모델 확정 시.
+
+## D-005: MVP 아키텍처 전면 재구성 — 1개월 MVP 스택 채택
+- 날짜: 2026-05-22
+- 컨텍스트: 팀원 정리 문서와 우리 분석 비교 결과, 1개월 MVP에는 8개월 풀스택이
+  과함. 팀원 안(Neo4j 단독 + LangGraph)이 MVP에 적합.
+- 결정: MVP 스택을 다음으로 확정 —
+  * Storage: **Neo4j 5.x Community 단독** (그래프 + 네이티브 vector index)
+  * Orchestration: **LangGraph** 5노드 state machine
+  * Backend/Frontend: **FastAPI** + **Streamlit**
+  * LLM: **로컬 LLM(Ollama, Qwen 2.5)** + **BGE-M3** 임베딩 — Azure OpenAI 가정 폐기
+- 유지(우리 5가지 보강): 통합 v1.2 ontology, Schema-Guided 출력, VersionRAG
+  메타데이터(`form_version`), axiom 결정론적 검증, schema mapping 룰북.
+- 대안: 3-layer(PG+Neo4j+Qdrant) 즉시 구축 (기각 — MVP 과설계).
+- 영향: Step 5~10 전반, 의존성·docker-compose.
+- 재검토 조건: vector recall < 70%, 또는 벡터 1M 초과 → D-006 트리거.
+
+## D-006: PostgreSQL·Qdrant 제거, v1.5+ 분리 트리거 정의
+- 날짜: 2026-05-22
+- 컨텍스트: D-005에 따라 MVP는 Neo4j 단독. PostgreSQL 적재 코드(Step 5)와
+  Qdrant 코드는 MVP 범위 밖.
+- 결정: `src/load/`(SQLAlchemy 7테이블·Alembic), Qdrant 클라이언트 코드 제거.
+  Neo4j ETL이 processed parquet → Neo4j(그래프+벡터)를 직접 적재.
+- 분리 트리거 (v1.5+에서 재도입 검토):
+  * Vector 검색 정확도 ≤ 70% 정체 → Qdrant 분리
+  * 다단계 정형 집계 쿼리 빈번 → PostgreSQL 분리
+  * 벡터 1M 초과 → Qdrant 분리 (Neo4j 단일 인스턴스 성능 한계)
+- 영향: Step 5~7.
+- 재검토 조건: 위 트리거 지표 도달 시.

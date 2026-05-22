@@ -6,37 +6,61 @@ LG 가전 신규 모델 개발 시, 기존 양산 모델(Base) 대비 부품 변
 ## 개요
 
 양식 4종(20col / 56col / 96col / 통합 v1.2)으로 흩어진 개발부품 마스터를 정답
-ontology(통합 v1.2)로 매핑하고, PostgreSQL(정형) + Neo4j(그래프) + Qdrant(벡터)에
-적재하여 OG-RAG 기반 검색·Agent의 기반을 만든다.
+ontology(통합 v1.2)로 매핑하고, **Neo4j 단독 스토어**(그래프 + 벡터 인덱스)에
+적재한 뒤, **LangGraph** 에이전트로 변경점 입력 → BOM/마스터 초안을 생성한다.
+
+MVP 아키텍처 결정 배경은 [`DECISIONS.md`](./DECISIONS.md) D-005/D-006 참조.
+
+## MVP 기술 스택
+
+| 계층 | 기술 |
+|---|---|
+| Frontend | Streamlit |
+| Backend | FastAPI |
+| Orchestration | LangGraph (5노드 state machine) |
+| LLM | Ollama (Qwen 2.5 32B / 7B) |
+| Embedding | BGE-M3 (Ollama, 1024 dim) |
+| Storage | Neo4j 5.x Community (그래프 + 네이티브 vector index) |
+| Ontology/Rules | JSON Schema + Pydantic + axioms (코드) |
+
+PostgreSQL·Qdrant는 MVP 범위 밖이며, 분리 트리거 도달 시 v1.5+에서 재도입 검토
+(DECISIONS D-006).
 
 ## 요구 사항
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (패키지 매니저)
-- Docker / Docker Compose (로컬 DB 구동)
+- Docker / Docker Compose
 
 ## 설치
 
 ```bash
 uv sync --extra dev          # 핵심 + 개발 의존성
-uv sync --extra embed        # 임베딩(sentence-transformers) 추가 시
-uv sync --extra llm          # LLM(openai) 추가 시
-cp .env.example .env         # 환경 변수 설정
+uv sync --extra embed        # BGE-M3 sentence-transformers fallback (~2GB)
+uv sync --extra structured   # outlines (schema-guided 출력 강제)
+uv sync --extra llm          # openai (양식 매핑 룰 1회성 생성용)
+cp .env.example .env
 ```
 
-## 로컬 DB 구동
+## 로컬 구동
 
 ```bash
-docker compose up -d         # PostgreSQL + Neo4j + Qdrant
-docker compose ps            # 헬스체크 확인 (healthy)
-docker compose down          # 중지 (-v 추가 시 볼륨 삭제)
+docker compose up -d         # Neo4j + Ollama + FastAPI + Streamlit
+docker compose ps            # 헬스체크 확인
 ```
 
 | 서비스 | 포트 | 비고 |
 |---|---|---|
-| PostgreSQL | 5432 | 정형 데이터 (SSoT) |
-| Neo4j | 7474 (UI), 7687 (bolt) | 그래프 |
-| Qdrant | 6333 (REST), 6334 (gRPC) | 벡터 |
+| Neo4j | 7474 (UI), 7687 (bolt) | 그래프 + 벡터 |
+| Ollama | 11434 | 로컬 LLM 서빙 |
+| FastAPI | 8000 | `/api/draft`, `/api/upload`, `/api/validate` |
+| Streamlit | 8501 | MVP UI |
+
+Ollama 모델은 최초 1회 받아야 한다:
+```bash
+docker exec lg_ollama ollama pull qwen2.5:32b
+docker exec lg_ollama ollama pull bge-m3
+```
 
 ## 파이프라인 단계
 
@@ -47,24 +71,12 @@ docker compose down          # 중지 (-v 추가 시 볼륨 삭제)
 | 2 | `src.extract.form_classifier` | 양식 자동 분류 |
 | 3 | `src.transform.schema_mapper` | `ontology/mapping_rules/*.yaml` |
 | 4 | `src.transform.entity_resolution` | `data/processed/entities/*.parquet` |
-| 5 | `src.load` | PostgreSQL 7개 테이블 |
-| 6 | `src.graph.etl` | Neo4j 그래프 |
-| 7 | `src.embed` | Qdrant collection |
+| 6 | `src.graph.etl` | Neo4j 그래프 + 벡터 인덱스 |
+| 7 | `src.embed` | BGE-M3 임베딩, Neo4j hybrid search |
 | 8 | `src.eval` | 평가 CLI |
-| 9~10 | `src.og_rag`, `src.agent` | RAG 레이어 (인터페이스 골격) |
+| 10 | `src.agent`, `src.api`, `src.ui` | LangGraph 에이전트 + FastAPI + Streamlit |
 
-## 새 파일 처리 절차
-
-```bash
-# 1. data/raw/ 에 파일 복사 후
-uv run python -m src.extract.inventory
-uv run python -m src.extract.form_classifier classify <file>
-uv run python -m src.transform.schema_mapper apply <file>
-uv run python -m src.load load --file <file>
-uv run python -m src.graph.etl sync --incremental
-uv run python -m src.embed sync --incremental
-uv run python -m src.eval all
-```
+OG-RAG hypergraph(`src.og_rag`)는 v2 항목 — DECISIONS D-003 참조.
 
 ## 테스트
 
@@ -73,6 +85,4 @@ uv run pytest
 ```
 
 실제 LG 엑셀 데이터가 없어 합성 fixture(`tests/fixtures/`)로 검증한다.
-실데이터 의존 작업은 코드에 `# TODO(real-data)` 로 표기되어 있다.
-
-자세한 의사결정 이력은 [`DECISIONS.md`](./DECISIONS.md) 참조.
+실데이터·로컬 LLM 의존 작업은 코드에 `# TODO(real-data)`, `D-003`으로 표기되어 있다.
