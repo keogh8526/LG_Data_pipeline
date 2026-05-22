@@ -1,0 +1,3 @@
+{"source_file": "sample_96col.xlsx", "form_version": "96col", "expected": {"Base P/No": "base_part_no", "New P/No": "new_part_no", "변경점": "change_point"}}
+{"source_file": "sample_56col.xlsx", "form_version": "56col", "expected": {"Base P/No": "base_part_no", "New P/No": "new_part_no", "Part Name": "part_name"}}
+{"source_file": "sample_20col.xlsx", "form_version": "20col", "expected": {"Base P/No": "base_part_no", "New P/No": "new_part_no"}}
