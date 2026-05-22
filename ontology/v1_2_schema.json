@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lg-bom-agent/ontology/v1_2_schema.json",
+  "title": "ChangeEvent",
+  "description": "통합 개발부품 마스터 v1.2 — 정답 ontology. TODO(real-data): R1~R5 멀티헤더 정밀 파싱 후 그룹별 필드 보강.",
+  "type": "object",
+  "required": [
+    "base_part_no",
+    "new_part_no",
+    "change_type",
+    "change_point",
+    "bom_level",
+    "part_type",
+    "model_code"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "description": "변경 이벤트 고유 ID"
+    },
+    "base_part_no": {
+      "type": ["string", "null"],
+      "description": "Base P/No — 변경 전 부품번호 (New 유형은 null 가능)"
+    },
+    "new_part_no": {
+      "type": "string",
+      "description": "New P/No — 변경 후 부품번호"
+    },
+    "part_name": {
+      "type": ["string", "null"],
+      "description": "Class Desc. / Part Name — 부품명"
+    },
+    "bom_level": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "BOM Level — 트리 깊이"
+    },
+    "part_type": {
+      "type": ["string", "null"],
+      "description": "Part Type — 사출/Assy/전장/단품"
+    },
+    "change_type": {
+      "type": "string",
+      "enum": ["New", "Change", "Carry-over"],
+      "description": "구분 — New / Change / Carry-over"
+    },
+    "change_point": {
+      "type": ["string", "null"],
+      "description": "변경점 — 자유텍스트"
+    },
+    "change_reason": {
+      "type": ["string", "null"],
+      "description": "변경사유 — 자유텍스트"
+    },
+    "qty": {
+      "type": ["number", "null"],
+      "description": "Qty — 수량"
+    },
+    "model_code": {
+      "type": "string",
+      "description": "대상 모델 코드 (예: WSED7667M.ABMQEUR)"
+    },
+    "source_file": {
+      "type": ["string", "null"],
+      "description": "원본 파일 경로 (메타데이터)"
+    },
+    "form_version": {
+      "type": ["string", "null"],
+      "description": "원본 양식 버전 (v1.2 / 96col / 56col / 20col)"
+    },
+    "extracted_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "추출 시각 (메타데이터)"
+    },
+    "common": {
+      "$ref": "#/$defs/CommonGroup"
+    },
+    "drbfm": {
+      "$ref": "#/$defs/DrbfmGroup"
+    },
+    "parts_grade": {
+      "$ref": "#/$defs/PartsGradeGroup"
+    },
+    "parts_dev": {
+      "$ref": "#/$defs/PartsDevGroup"
+    },
+    "fmea": {
+      "$ref": "#/$defs/FmeaGroup"
+    },
+    "hsms": {
+      "$ref": "#/$defs/HsmsGroup"
+    }
+  },
+  "$defs": {
+    "CommonGroup": {
+      "type": "object",
+      "description": "공통 그룹 — 모델 메타",
+      "properties": {
+        "base_model": {"type": ["string", "null"], "description": "Base Model"},
+        "new_model": {"type": ["string", "null"], "description": "New Model"},
+        "grade": {"type": ["string", "null"], "description": "Grade"},
+        "buyer": {"type": ["string", "null"], "description": "Buyer"},
+        "production_date": {"type": ["string", "null"], "description": "양산일자"}
+      }
+    },
+    "DrbfmGroup": {
+      "type": "object",
+      "description": "DRBFM 그룹",
+      "properties": {
+        "concern": {"type": ["string", "null"], "description": "DRBFM 우려사항"}
+      }
+    },
+    "PartsGradeGroup": {
+      "type": "object",
+      "description": "부품등급심의 그룹",
+      "properties": {
+        "grade_decision": {"type": ["string", "null"], "description": "등급 심의 결과"}
+      }
+    },
+    "PartsDevGroup": {
+      "type": "object",
+      "description": "부품개발완료 그룹",
+      "properties": {
+        "dev_status": {"type": ["string", "null"], "description": "개발 완료 상태"}
+      }
+    },
+    "FmeaGroup": {
+      "type": "object",
+      "description": "FMEA 그룹",
+      "properties": {
+        "failure_mode": {"type": ["string", "null"], "description": "고장 모드"}
+      }
+    },
+    "HsmsGroup": {
+      "type": "object",
+      "description": "HSMS 그룹 (유해물질)",
+      "properties": {
+        "hazard_status": {"type": ["string", "null"], "description": "유해물질 상태"}
+      }
+    },
+    "FormVersion": {
+      "type": "object",
+      "description": "통합 v1.2 History 시트 — 양식 버전 이력",
+      "required": ["version"],
+      "properties": {
+        "version": {"type": "string", "description": "양식 버전"},
+        "released_at": {"type": ["string", "null"], "description": "배포일"},
+        "change_summary": {"type": ["string", "null"], "description": "변경 요약"},
+        "updated_by": {"type": ["string", "null"], "description": "작성자"}
+      }
+    }
+  }
+}

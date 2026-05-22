@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# uv
+.uv/
+
+# Data — raw inputs and derived artifacts are not versioned
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/eval/results/*
+!data/eval/results/.gitkeep
+
+# Caches
+.cache/
+.diskcache/
+.pytest_cache/
+.mypy_cache/
+
+# Env
+.env
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
