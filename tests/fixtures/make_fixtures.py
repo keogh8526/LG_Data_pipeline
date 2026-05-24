@@ -22,10 +22,14 @@ def _save(workbook: openpyxl.Workbook, name: str) -> Path:
 
 
 def make_v12() -> Path:
-    """Create a v1.2-shaped fixture (History sheet + ~59 cols)."""
+    """Create a v1.2-shaped fixture (History sheet + ~59 cols).
+
+    The main sheet name is intentionally generic — the v1.2 unified template
+    does not carry per-grade sheet names, unlike the 56col form.
+    """
     wb = openpyxl.Workbook()
     main = wb.active
-    main.title = "WSED7667M_Best-1_EUR"
+    main.title = "변경점List"
     main.append(["Common", "FMEA", "HSMS"])
     headers = ["Base P/No", "New P/No", "Class Desc.", "BOM Level", "Part Type",
                "구분", "변경점", "변경사유", "Qty", "Base Model"]

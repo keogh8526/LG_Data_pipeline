@@ -1,0 +1,57 @@
+# Step 2 — deterministic domain axioms.
+#
+# These rules are the validation ground truth. They never call an LLM. Patterns
+# and vocabularies are derived from the project spec and synthetic fixtures, and
+# MUST be revised once real LG data is available (see DECISIONS D-002).
+
+part_no:
+  pattern: '^[A-Z]{2,3}\d{7,8}$'
+  min_length: 9
+  max_length: 11
+  description: "부품번호: 영문 2-3자 + 숫자 7-8자"
+
+model_code:
+  pattern: '^[A-Z]{2,5}\d{3,5}[A-Z]?(\.[A-Z0-9]+)?$'
+  description: "모델코드: WSED7667M.ABMQEUR 형태 (suffix 선택)"
+
+change_type:
+  allowed: ["New", "Change", "Carry-over"]
+  aliases:
+    "신규": "New"
+    "N": "New"
+    "변경": "Change"
+    "C": "Change"
+    "유지": "Carry-over"
+    "K": "Carry-over"
+    "Keep": "Carry-over"
+    "carryover": "Carry-over"
+
+grade:
+  allowed:
+    - "Best-1"
+    - "Best-2"
+    - "Better-1"
+    - "Better-2"
+    - "Good-1"
+    - "Good-2"
+    - "Good-1 BK"
+    - "Good-2 BK"
+  aliases:
+    "Best1": "Best-1"
+    "B1": "Best-1"
+    "Best2": "Best-2"
+    "B2": "Best-2"
+    "Better1": "Better-1"
+    "Better2": "Better-2"
+    "Good1": "Good-1"
+    "Good2": "Good-2"
+
+region:
+  allowed: ["EUR", "EUE", "EAP", "SJ", "SA", "AU"]
+
+bom_level:
+  min: 0
+  max: 10
+
+event_stage:
+  allowed: ["CP", "PP", "DV", "PV", "PQ"]

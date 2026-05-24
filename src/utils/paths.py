@@ -6,13 +6,22 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+# --- Data layers ----------------------------------------------------------
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
+GOLDEN_DIR = DATA_DIR / "golden"
 INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
-EVAL_DIR = DATA_DIR / "eval"
+QUARANTINE_DIR = DATA_DIR / "quarantine"
+REPORTS_DIR = DATA_DIR / "reports"
 
-ONTOLOGY_DIR = PROJECT_ROOT / "ontology"
-MAPPING_RULES_DIR = ONTOLOGY_DIR / "mapping_rules"
+# --- Config ---------------------------------------------------------------
+CONFIG_DIR = PROJECT_ROOT / "config"
+FORM_SIGNATURES_PATH = CONFIG_DIR / "form_signatures.yaml"
+MAPPING_RULES_DIR = CONFIG_DIR / "mapping_rules"
+NORMALIZATION_PATH = CONFIG_DIR / "normalization.yaml"
+AXIOMS_PATH = CONFIG_DIR / "axioms.yaml"
 
-V1_2_SCHEMA_PATH = ONTOLOGY_DIR / "v1_2_schema.json"
+# --- Ontology -------------------------------------------------------------
+ONTOLOGY_DIR = PROJECT_ROOT / "src" / "ontology"
+SCHEMA_JSON_PATH = ONTOLOGY_DIR / "schema.json"

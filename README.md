@@ -3,86 +3,86 @@
 LG 가전 신규 모델 개발 시, 기존 양산 모델(Base) 대비 부품 변경을 추적하는
 개발부품 마스터/BOM 문서를 표준화·DB화·검색 가능하게 만드는 데이터 파이프라인.
 
-## 개요
+## 개요 (v2 — 1개월 MVP, 전처리 중심)
 
-양식 4종(20col / 56col / 96col / 통합 v1.2)으로 흩어진 개발부품 마스터를 정답
-ontology(통합 v1.2)로 매핑하고, **Neo4j 단독 스토어**(그래프 + 벡터 인덱스)에
-적재한 뒤, **LangGraph** 에이전트로 변경점 입력 → BOM/마스터 초안을 생성한다.
+양식 4종(20col / 56col / 96col / v1.2)으로 흩어진 개발부품 마스터를 **96col
+정답 schema**로 매핑·정규화·검증한 뒤 **PostgreSQL + pgvector**에 batch로
+적재한다. 사용자가 손으로 만든 결과(`data/golden/`)를 ground truth로 두고,
+자동 결과와 매 dry-run에 diff하여 자동화 정확도를 추적한다.
 
-MVP 아키텍처 결정 배경은 [`DECISIONS.md`](./DECISIONS.md) D-005/D-006 참조.
+아키텍처 결정 배경은 [`DECISIONS.md`](./DECISIONS.md) D-007 참조.
 
 ## MVP 기술 스택
 
 | 계층 | 기술 |
 |---|---|
-| Frontend | Streamlit |
-| Backend | FastAPI |
-| Orchestration | LangGraph (5노드 state machine) |
-| LLM | Ollama (Qwen 2.5 32B / 7B) |
-| Embedding | BGE-M3 (Ollama, 1024 dim) |
-| Storage | Neo4j 5.x Community (그래프 + 네이티브 vector index) |
-| Ontology/Rules | JSON Schema + Pydantic + axioms (코드) |
+| Storage | PostgreSQL 16 + pgvector + pg_trgm (단독) |
+| LLM | Ollama (Qwen 2.5) + BGE-M3 임베딩 (1024 dim) |
+| Schema/Rules | YAML config + Pydantic + axioms (코드) |
+| CLI | typer (`python -m src.cli`) |
+| 데이터 처리 | pandas + pyarrow + openpyxl + pandera + rapidfuzz |
 
-PostgreSQL·Qdrant는 MVP 범위 밖이며, 분리 트리거 도달 시 v1.5+에서 재도입 검토
-(DECISIONS D-006).
+Backend(FastAPI)·Frontend(Streamlit)·Agent(LangGraph)는 다음 phase.
 
 ## 요구 사항
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (패키지 매니저)
+- [uv](https://docs.astral.sh/uv/)
 - Docker / Docker Compose
 
 ## 설치
 
 ```bash
-uv sync --extra dev          # 핵심 + 개발 의존성
-uv sync --extra embed        # BGE-M3 sentence-transformers fallback (~2GB)
-uv sync --extra structured   # outlines (schema-guided 출력 강제)
-uv sync --extra llm          # openai (양식 매핑 룰 1회성 생성용)
+uv sync --extra dev        # 핵심 + 개발 의존성
+uv sync --extra embed      # BGE-M3 sentence-transformers fallback (~2GB)
 cp .env.example .env
 ```
 
 ## 로컬 구동
 
 ```bash
-docker compose up -d         # Neo4j + Ollama + FastAPI + Streamlit
-docker compose ps            # 헬스체크 확인
-```
-
-| 서비스 | 포트 | 비고 |
-|---|---|---|
-| Neo4j | 7474 (UI), 7687 (bolt) | 그래프 + 벡터 |
-| Ollama | 11434 | 로컬 LLM 서빙 |
-| FastAPI | 8000 | `/api/draft`, `/api/upload`, `/api/validate` |
-| Streamlit | 8501 | MVP UI |
-
-Ollama 모델은 최초 1회 받아야 한다:
-```bash
-docker exec lg_ollama ollama pull qwen2.5:32b
+docker compose up -d                            # PostgreSQL + Ollama
+docker exec lg_ollama ollama pull qwen2.5:32b   # 1회
 docker exec lg_ollama ollama pull bge-m3
 ```
 
-Neo4j 컨테이너가 뜨면 제약조건과 벡터 인덱스를 1회 초기화한다 (구
-PostgreSQL `init-db`를 대체 — DECISIONS D-006):
-```bash
-uv run python -m src.graph.etl init-schema
+## 디렉토리 구조
+
+```
+config/
+  form_signatures.yaml         # 양식 분류 시그니처 (Step 1)
+  axioms.yaml                  # 부품번호·모델코드·alias 등 (Step 2)
+  mapping_rules/v1_2.yaml      # 96col → v1.2 forward-compat (placeholder)
+data/
+  raw/        golden/          # 원본 / 사용자 손작업 (ground truth)
+  interim/    processed/       # 중간 / 최종 산출물
+  quarantine/ reports/         # 격리 / markdown 리포트
+src/
+  ontology/   schema.py, schema.json, axioms.py
+  preprocess/ inventory, classify, diff (Step 0~1 완료, 나머지는 Step 3~4)
+  utils/      logging, paths, audit
+  cli.py
+tests/
 ```
 
-## 파이프라인 단계
+## 사용 가능한 명령 (Step 0~2)
 
-| Step | 모듈 | 산출물 |
+| 명령 | 단계 | 설명 |
 |---|---|---|
-| 0 | `src.extract.inventory` | `data/interim/file_inventory.parquet` |
-| 1 | `ontology/` | `v1_2_schema.json`, `models.py`, `axioms.py` |
-| 2 | `src.extract.form_classifier` | 양식 자동 분류 |
-| 3 | `src.transform.schema_mapper` | `ontology/mapping_rules/*.yaml` |
-| 4 | `src.transform.entity_resolution` | `data/processed/entities/*.parquet` |
-| 6 | `src.graph.etl` | Neo4j 그래프 + 벡터 인덱스 |
-| 7 | `src.embed` | BGE-M3 임베딩, Neo4j hybrid search |
-| 8 | `src.eval` | 평가 CLI |
-| 10 | `src.agent`, `src.api`, `src.ui` | LangGraph 에이전트 + FastAPI + Streamlit |
+| `uv run python -m src.cli inventory` | Step 0 | `data/raw/` 스캔 → `data/interim/file_inventory.parquet` |
+| `uv run python -m src.cli classify <path> [--all]` | Step 1 | 양식 분류 (파일 또는 디렉토리) |
+| `uv run python -m src.cli schema-export` | Step 2 | 96col 정답 schema → JSON Schema 출력 |
 
-OG-RAG hypergraph(`src.og_rag`)는 v2 항목 — DECISIONS D-003 참조.
+## 파이프라인 단계 (v2)
+
+| Step | 산출물 | 상태 |
+|---|---|---|
+| 0 | 환경, 인벤토리, golden 폴더 명세 | ✅ |
+| 1 | `config/form_signatures.yaml` + 결정론적 분류기 | ✅ |
+| 2 | 96col Pydantic schema + axioms (config-driven) | ✅ |
+| 3 | 양식별 매핑 + 정규화 + Entity Resolution | 예정 |
+| 4 | 15지표 검증 + Quarantine + Golden diff + dry-run/commit/rollback | 예정 |
+| 5 | PostgreSQL + pgvector 적재 (5 테이블 + run_id 배치) | 예정 |
 
 ## 테스트
 
@@ -90,5 +90,5 @@ OG-RAG hypergraph(`src.og_rag`)는 v2 항목 — DECISIONS D-003 참조.
 uv run pytest
 ```
 
-실제 LG 엑셀 데이터가 없어 합성 fixture(`tests/fixtures/`)로 검증한다.
-실데이터·로컬 LLM 의존 작업은 코드에 `# TODO(real-data)`, `D-003`으로 표기되어 있다.
+실데이터 부재 상태에서는 `tests/fixtures/`의 합성 엑셀로 결정론적 코드 경로만
+검증한다 (DECISIONS D-002).

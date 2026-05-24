@@ -1,3 +1,0 @@
-{"query": "내열 보강 변경 이벤트", "expected_event_ids": ["EVT-0001"], "expected_part_nos": ["AB1234568"]}
-{"query": "동유럽향 모델의 사출 부품 변경", "expected_event_ids": ["EVT-0002"], "expected_part_nos": []}
-{"query": "필드 불량으로 인한 부품 교체", "expected_event_ids": ["EVT-0001", "EVT-0003"], "expected_part_nos": []}

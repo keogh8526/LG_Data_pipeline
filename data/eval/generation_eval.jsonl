@@ -1,1 +1,0 @@
-{"query": "AB1234567을 AB1234568로 바꾼 변경 이벤트를 v1.2 마스터 JSON으로", "must_have_fields": ["base_part_no", "new_part_no", "change_type", "change_point", "model_code"], "expected_master_json": {"base_part_no": "AB1234567", "new_part_no": "AB1234568", "change_type": "Change", "model_code": "WSED7667M.ABMQEUR"}}

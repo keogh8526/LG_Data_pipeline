@@ -1,0 +1,26 @@
+# Forward-compatible mapping: 96col answer schema -> v1.2 future superset.
+#
+# PLACEHOLDER (Step 2). The 96col form is the MVP answer schema; v1.2 is a
+# future superset whose real filled-in samples do not yet exist. This mapping
+# is filled in once 5+ real v1.2 masters are available, at which point the
+# answer schema may migrate to v1.2 (see DECISIONS D-007).
+#
+# Direction: ChangeEventRow (96col) field -> v1.2 column name.
+
+direction: "96col_to_v1_2"
+status: "placeholder"
+
+mappings:
+  base_part_no: "Base P/No"
+  new_part_no: "New P/No"
+  part_name: "Class Desc."
+  bom_level: "BOM Level"
+  part_type: "Part Type"
+  change_type: "구분"
+  change_point: "변경점"
+  change_reason: "변경사유"
+  qty: "Qty"
+  model_code: "Model Code"
+
+# v1.2-only columns with no 96col source — left empty on forward mapping.
+v1_2_extra_columns: []

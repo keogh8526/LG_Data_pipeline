@@ -1,0 +1,67 @@
+# Step 1 — form-version classification signatures.
+#
+# Each version lists weighted signals. A file's score for a version is the sum
+# of matched signal weights; if the top score >= its threshold the file is
+# classified as that version. Otherwise it falls back to "unknown".
+#
+# Signal types (all deterministic — no LLM):
+#   sheet_exists          name        : a sheet with this exact name exists
+#   sheet_name_contains   keywords[]  : any sheet name contains any keyword
+#   col_count_range       range[2]    : max column count across sheets in range
+#   header_text_contains  keywords[]  : any top-left cell text contains a keyword
+#   marker_cell           value       : a top-left cell equals this value
+#   stage_row             markers[]   : >=4 of these markers appear together
+#
+# These signatures are tuned against synthetic fixtures and MUST be revised
+# once real LG masters arrive (see DECISIONS D-002).
+
+versions:
+  v1_2:
+    description: "통합 마스터 v1.2 (미래 표준, 2025.09) — 빈 템플릿 단계"
+    threshold: 0.7
+    signals:
+      - type: sheet_exists
+        name: "History"
+        weight: 0.4
+      - type: col_count_range
+        range: [45, 75]
+        weight: 0.3
+      - type: header_text_contains
+        keywords: ["Common", "FMEA", "HSMS"]
+        weight: 0.3
+
+  v96col:
+    description: "현재 운용 중 양식 (2024.11~) — 실질적 정답 schema"
+    threshold: 0.7
+    signals:
+      - type: col_count_range
+        range: [80, 110]
+        weight: 0.4
+      - type: marker_cell
+        value: "aaaa"
+        weight: 0.3
+      - type: stage_row
+        markers: ["CP", "PP", "DV", "PV", "PQ"]
+        weight: 0.3
+
+  v56col:
+    description: "중간 변형 (단일 등급, 2024.04~2024.10)"
+    threshold: 0.7
+    signals:
+      - type: col_count_range
+        range: [45, 79]
+        weight: 0.5
+      - type: sheet_name_contains
+        keywords: ["Better", "Best", "Good"]
+        weight: 0.5
+
+  v20col:
+    description: "구버전 (2024.04 이전, 단순 단일 헤더)"
+    threshold: 0.7
+    signals:
+      - type: col_count_range
+        range: [18, 35]
+        weight: 0.6
+      - type: header_text_contains
+        keywords: ["Base P/No", "P/no.", "Part Name"]
+        weight: 0.4

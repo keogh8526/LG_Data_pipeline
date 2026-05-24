@@ -1,18 +1,17 @@
 services:
-  neo4j:
-    image: neo4j:5
-    container_name: lg_neo4j
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lg_postgres
     environment:
-      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-neo4j_password}
-      # Vector index support is built into Neo4j 5.x.
-      NEO4J_PLUGINS: '["apoc"]'
+      POSTGRES_USER: ${POSTGRES_USER:-lg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lg_password}
+      POSTGRES_DB: ${POSTGRES_DB:-lg_bom}
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "5432:5432"
     volumes:
-      - neo4j_data:/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lg}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -30,41 +29,6 @@ services:
       timeout: 5s
       retries: 5
 
-  backend:
-    image: python:3.11-slim
-    container_name: lg_backend
-    working_dir: /app
-    command: >
-      sh -c "pip install uv && uv sync &&
-             uv run uvicorn src.api.app:app --host 0.0.0.0 --port 8000"
-    environment:
-      NEO4J_URI: bolt://neo4j:7687
-      OLLAMA_HOST: http://ollama:11434
-    ports:
-      - "8000:8000"
-    volumes:
-      - .:/app
-    depends_on:
-      - neo4j
-      - ollama
-
-  streamlit:
-    image: python:3.11-slim
-    container_name: lg_streamlit
-    working_dir: /app
-    command: >
-      sh -c "pip install uv && uv sync &&
-             uv run streamlit run src/ui/streamlit_app.py
-             --server.port 8501 --server.address 0.0.0.0"
-    environment:
-      API_BASE: http://backend:8000
-    ports:
-      - "8501:8501"
-    volumes:
-      - .:/app
-    depends_on:
-      - backend
-
 volumes:
-  neo4j_data:
+  pg_data:
   ollama_data:

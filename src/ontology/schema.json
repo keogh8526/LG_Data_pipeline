@@ -1,0 +1,307 @@
+{
+  "$defs": {
+    "CommonFields": {
+      "description": "공통 그룹 — 모델/개발 메타데이터.",
+      "properties": {
+        "base_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Model"
+        },
+        "new_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "New Model"
+        },
+        "grade": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grade"
+        },
+        "buyer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Buyer"
+        },
+        "production_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Production Date"
+        }
+      },
+      "title": "CommonFields",
+      "type": "object"
+    },
+    "DRBFMFields": {
+      "description": "DRBFM 그룹 — 변경점 우려 분석.",
+      "properties": {
+        "concern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Concern"
+        },
+        "countermeasure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Countermeasure"
+        }
+      },
+      "title": "DRBFMFields",
+      "type": "object"
+    },
+    "HSMSFields": {
+      "description": "HSMS 그룹 — 유해물질 관리.",
+      "properties": {
+        "hazard_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hazard Status"
+        }
+      },
+      "title": "HSMSFields",
+      "type": "object"
+    },
+    "MoldFields": {
+      "description": "금형/사출 그룹.",
+      "properties": {
+        "mold_no": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mold No"
+        },
+        "cavity": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cavity"
+        }
+      },
+      "title": "MoldFields",
+      "type": "object"
+    },
+    "PartCertFields": {
+      "description": "부품 인증/등급 그룹.",
+      "properties": {
+        "grade_decision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grade Decision"
+        },
+        "dev_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dev Status"
+        }
+      },
+      "title": "PartCertFields",
+      "type": "object"
+    }
+  },
+  "description": "한 행의 정규화된 96col 마스터 — 부품 변경 이벤트.",
+  "properties": {
+    "base_part_no": {
+      "title": "Base Part No",
+      "type": "string"
+    },
+    "new_part_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "New Part No"
+    },
+    "part_name": {
+      "title": "Part Name",
+      "type": "string"
+    },
+    "bom_level": {
+      "maximum": 10,
+      "minimum": 0,
+      "title": "Bom Level",
+      "type": "integer"
+    },
+    "part_type": {
+      "title": "Part Type",
+      "type": "string"
+    },
+    "change_type": {
+      "title": "Change Type",
+      "type": "string"
+    },
+    "change_point": {
+      "title": "Change Point",
+      "type": "string"
+    },
+    "change_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Change Reason"
+    },
+    "qty": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Qty"
+    },
+    "model_code": {
+      "title": "Model Code",
+      "type": "string"
+    },
+    "common": {
+      "$ref": "#/$defs/CommonFields"
+    },
+    "drbfm": {
+      "$ref": "#/$defs/DRBFMFields"
+    },
+    "part_cert": {
+      "$ref": "#/$defs/PartCertFields"
+    },
+    "hsms": {
+      "$ref": "#/$defs/HSMSFields"
+    },
+    "mold": {
+      "$ref": "#/$defs/MoldFields"
+    },
+    "source_file": {
+      "title": "Source File",
+      "type": "string"
+    },
+    "form_version": {
+      "title": "Form Version",
+      "type": "string"
+    },
+    "extracted_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Extracted At"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "base_part_no",
+    "part_name",
+    "bom_level",
+    "part_type",
+    "change_type",
+    "change_point",
+    "model_code",
+    "source_file",
+    "form_version",
+    "run_id"
+  ],
+  "title": "ChangeEventRow",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
