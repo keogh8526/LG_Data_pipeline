@@ -8,7 +8,6 @@ import pandas as pd
 import pytest
 
 from src.preprocess.extract import extract_rows
-from src.preprocess.map import load_mapping_rule
 from src.preprocess.normalize import (
     NormalizationResult,
     is_null,
@@ -87,8 +86,20 @@ def test_normalize_dataframe_records_audit_trail() -> None:
 
 
 def test_extract_handles_merged_and_formula_cells(tmp_path: Path) -> None:
+    # The merged/formula fixture has its header at row 1; build a minimal rule
+    # on the fly rather than reusing the 56col rule (which expects row 7 for
+    # real LG data).
+    import re as _re
+
+    from src.preprocess.map import MappingRule
+
     workbook = make_merged_formula_workbook(tmp_path / "merged.xlsx")
-    rule = load_mapping_rule("56col")
+    rule = MappingRule(
+        form_version="merged_fixture",
+        header_row=1,
+        include_patterns=[_re.compile(r"Better.*")],
+        exclude_patterns=[],
+    )
     df = extract_rows(workbook, rule)
     # 3 data rows (B3:B4 merge → row 4 reads empty for Part Name).
     assert len(df) == 3

@@ -39,12 +39,13 @@ def test_sheet_passes_filters() -> None:
 
 
 def test_apply_mapping_picks_source_by_priority() -> None:
-    # 20col base_part_no sources: "P/no." (1), "Base P/No" (2).
+    # 20col base_part_no sources after the real-data audit: "Base P/No" (1),
+    # "P/no." (2).
     rule = load_mapping_rule("20col")
     df = pd.DataFrame(
         {
-            "P/no.": ["ab1234567 "],
-            "Base P/No": ["IGNORED"],
+            "Base P/No": [" ab1234567"],
+            "P/no.": ["IGNORED"],
             "Part Name": ["Bracket"],
         }
     )

@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     # Excel / tabular
     "openpyxl>=3.1",
+    "python-calamine>=0.2",
     "pandas>=2.2",
     "pyarrow>=16.0",
     # Schema / validation
@@ -33,6 +34,10 @@ dependencies = [
 # optional per DECISIONS D-004 — Ollama serves embeddings in normal operation.
 embed = [
     "sentence-transformers>=3.0",
+]
+# Visualization for docs/walkthrough.md (matplotlib + pillow stack).
+viz = [
+    "matplotlib>=3.8",
 ]
 dev = [
     "pytest>=8.2",

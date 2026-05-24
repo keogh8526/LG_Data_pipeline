@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import openpyxl
 import yaml
 
+from src.utils.excel import SheetData, read_workbook
 from src.utils.logging import get_logger
 from src.utils.paths import FORM_SIGNATURES_PATH
 
@@ -76,13 +76,13 @@ def load_signatures(path: Path = FORM_SIGNATURES_PATH) -> dict[str, Any]:
     return data["versions"]
 
 
-def _collect_top_left(sheet: object) -> list[str]:
+def _collect_top_left(sheet: SheetData) -> list[str]:
     """Return non-empty top-left cell texts (stripped) for one sheet."""
     texts: list[str] = []
-    for row in sheet.iter_rows(min_row=1, max_row=_SCAN_ROWS, max_col=_SCAN_COLS):  # type: ignore[attr-defined]
-        for cell in row:
-            if cell.value is not None:
-                texts.append(str(cell.value).strip())
+    for row in sheet.rows[:_SCAN_ROWS]:
+        for cell in row[:_SCAN_COLS]:
+            if cell is not None and cell != "":
+                texts.append(str(cell).strip())
     return texts
 
 
@@ -95,28 +95,24 @@ def extract_features(path: Path) -> FormFeatures:
     Returns:
         A populated :class:`FormFeatures` across all sheets.
     """
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    try:
-        sheets = workbook.worksheets
-        max_cols = max((s.max_column or 0 for s in sheets), default=0)
-        cell_texts: list[str] = []
-        for sheet in sheets:
-            cell_texts.extend(_collect_top_left(sheet))
-        return FormFeatures(
-            sheet_names=[s.title for s in sheets],
-            max_cols=max_cols,
-            cell_texts=cell_texts,
-        )
-    finally:
-        workbook.close()
+    sheets = read_workbook(path)
+    max_cols = max((s.max_col for s in sheets), default=0)
+    cell_texts: list[str] = []
+    for sheet in sheets:
+        cell_texts.extend(_collect_top_left(sheet))
+    return FormFeatures(
+        sheet_names=[s.name for s in sheets],
+        max_cols=max_cols,
+        cell_texts=cell_texts,
+    )
 
 
-def _extract_sheet_features(sheet: object) -> FormFeatures:
+def _extract_sheet_features(sheet: SheetData) -> FormFeatures:
     """Per-sheet features. ``sheet_names`` only carries this sheet's own name
     so the per-sheet decision does not depend on sibling sheets."""
     return FormFeatures(
-        sheet_names=[sheet.title],  # type: ignore[attr-defined]
-        max_cols=sheet.max_column or 0,  # type: ignore[attr-defined]
+        sheet_names=[sheet.name],
+        max_cols=sheet.max_col,
         cell_texts=_collect_top_left(sheet),
     )
 
@@ -210,18 +206,18 @@ def classify_form(
         ``sheet_results`` for each worksheet.
     """
     versions = signatures if signatures is not None else load_signatures()
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    sheet_names: list[str] = [s.title for s in workbook.worksheets]
+    sheets = read_workbook(path)
+    sheet_names: list[str] = [s.name for s in sheets]
 
     # Per-sheet pass.
     sheet_results: dict[str, SheetResult] = {}
-    for sheet in workbook.worksheets:
+    for sheet in sheets:
         features = _extract_sheet_features(sheet)
         version, confidence, _needs_review, scores = _decide(
             versions, features, scope="sheet"
         )
-        sheet_results[sheet.title] = SheetResult(
-            sheet_name=sheet.title,
+        sheet_results[sheet.name] = SheetResult(
+            sheet_name=sheet.name,
             form_version=version,
             confidence=confidence,
             evidence=scores,
@@ -229,10 +225,9 @@ def classify_form(
 
     # File-level pass (all sheets aggregated; lets file-level signals fire).
     cell_texts: list[str] = []
-    for sheet in workbook.worksheets:
+    for sheet in sheets:
         cell_texts.extend(_collect_top_left(sheet))
-    max_cols = max((s.max_column or 0 for s in workbook.worksheets), default=0)
-    workbook.close()
+    max_cols = max((s.max_col for s in sheets), default=0)
     file_features = FormFeatures(
         sheet_names=sheet_names, max_cols=max_cols, cell_texts=cell_texts
     )

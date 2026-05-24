@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import openpyxl
 import pandas as pd
 import typer
 
+from src.utils.excel import read_workbook
 from src.utils.logging import get_logger
 from src.utils.paths import INTERIM_DIR, RAW_DIR
 
@@ -105,22 +105,18 @@ def scan_file(path: Path) -> FileInfo:
         date_hint=file_hints["date"],
         model_hint=file_hints["model"],
     )
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    try:
-        for sheet in workbook.worksheets:
-            sheet_hints = _extract_name_hints(sheet.title)
-            info.sheets.append(
-                SheetInfo(
-                    name=sheet.title,
-                    max_row=sheet.max_row or 0,
-                    max_col=sheet.max_column or 0,
-                    model_hint=sheet_hints["model"],
-                    grade_hint=sheet_hints["grade"],
-                    region_hint=sheet_hints["region"],
-                )
+    for sheet in read_workbook(path):
+        sheet_hints = _extract_name_hints(sheet.name)
+        info.sheets.append(
+            SheetInfo(
+                name=sheet.name,
+                max_row=sheet.max_row,
+                max_col=sheet.max_col,
+                model_hint=sheet_hints["model"],
+                grade_hint=sheet_hints["grade"],
+                region_hint=sheet_hints["region"],
             )
-    finally:
-        workbook.close()
+        )
     info.sheet_count = len(info.sheets)
     return info
 

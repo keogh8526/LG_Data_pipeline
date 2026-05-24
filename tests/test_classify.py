@@ -17,7 +17,7 @@ _EXPECTED = {
 
 def test_signatures_load() -> None:
     versions = load_signatures()
-    assert set(versions) == {"v1_2", "96col", "56col", "20col"}
+    assert set(versions) == {"v1_2", "96col", "56col", "20col", "bom_tree"}
 
 
 def test_all_fixtures_classified_correctly(fixture_workbooks: Path) -> None:
@@ -43,7 +43,7 @@ def test_unknown_file_falls_back(tmp_path: Path) -> None:
 
 def test_evidence_records_all_version_scores(fixture_workbooks: Path) -> None:
     result = classify_form(fixture_workbooks / "sample_96col.xlsx")
-    assert set(result.evidence) == {"v1_2", "96col", "56col", "20col"}
+    assert set(result.evidence) == {"v1_2", "96col", "56col", "20col", "bom_tree"}
     assert result.evidence["96col"] >= 0.7
 
 

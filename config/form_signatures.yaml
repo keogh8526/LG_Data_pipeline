@@ -63,5 +63,16 @@ versions:
         range: [18, 35]
         weight: 0.6
       - type: header_text_contains
-        keywords: ["Base P/No", "P/no.", "Part Name"]
+        keywords: ["Base P/No", "P/no.", "Part Name", "Set P/No"]
         weight: 0.4
+
+  bom_tree:
+    description: "PDM/PLM BOM 트리 덤프 (ag-grid 1.0). 변경점 마스터 아님 — bom_edges 도메인."
+    threshold: 0.7
+    signals:
+      - type: sheet_name_contains
+        keywords: ["ag-grid"]
+        weight: 0.5
+      - type: header_text_contains
+        keywords: ["Lvl", "Check Out", "I.S", "ModelECO"]
+        weight: 0.5

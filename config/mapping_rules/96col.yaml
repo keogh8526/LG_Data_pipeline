@@ -1,13 +1,16 @@
 # 96col -> 96col identity mapping (answer schema).
+#
 # Source column names are the real LG header names; this file documents them
-# and applies the same minimal cleanup applied to every form.
+# and applies the same minimal cleanup applied to every form. Sub-header rows
+# below the column header (DMS keys, 필수/옵션 markers, Q-Map labels) are
+# left to the quarantine pass — they fail the required-empty check naturally.
 
 form_version: "96col"
 header_row: 9    # multi-header R1~R8 above; real column names at row 9.
 
 sheet_filter:
-  include_patterns: [".*"]
-  exclude_patterns: ["부품 등급 Guide", "History", "Cover", "Index"]
+  include_patterns: ["변경 부품", "변경부품", "Change.*Part", "Better.*", "Best.*"]
+  exclude_patterns: ["부품등급", "부품인정", "History", "Cover", "Index", "심의회"]
 
 mappings:
   base_part_no:
@@ -25,8 +28,9 @@ mappings:
 
   part_name:
     sources:
-      - {column_name: "Class Desc.", priority: 1}
-      - {column_name: "부품명", priority: 2}
+      - {column_name: "Class Desc.(Part Name)", priority: 1}
+      - {column_name: "Class Desc.", priority: 2}
+      - {column_name: "부품명", priority: 3}
     transformations: [strip]
     required: true
 
@@ -34,6 +38,7 @@ mappings:
     sources:
       - {column_name: "BOM Level", priority: 1}
       - {column_name: "Lvl", priority: 2}
+      - {column_name: "Level", priority: 3}
     transformations: [{type: cast, to: int}]
     required: true
 
@@ -46,6 +51,7 @@ mappings:
   change_type:
     sources:
       - {column_name: "구분", priority: 1}
+      - {column_name: "Classification", priority: 2}
     transformations: [strip, {type: map_alias, field: change_type}]
     required: true
     allowed: ["New", "Change", "Carry-over"]
@@ -53,24 +59,33 @@ mappings:
   change_point:
     sources:
       - {column_name: "변경점", priority: 1}
+      - {column_name: "Changing Point", priority: 2}
+      - {column_name: "Change Point", priority: 3}
     transformations: [strip]
     required: true
 
   change_reason:
     sources:
       - {column_name: "변경사유", priority: 1}
+      - {column_name: "Changing Reason", priority: 2}
     transformations: [strip]
     required: false
 
   qty:
     sources:
       - {column_name: "Qty", priority: 1}
+      - {column_name: "Quantity", priority: 2}
+      - {column_name: "Quanty", priority: 3}    # real-data typo
     transformations: [{type: cast, to: float}]
     required: false
 
   model_code:
+    # Per-row model code is rare in 96col masters — the model lives in the
+    # meta header (R2). Step 4 / Step 5 enrich from meta separately; for now
+    # quarantine catches rows that fall through.
     sources:
       - {column_name: "Model Code", priority: 1}
       - {column_name: "Base Model", priority: 2}
+      - {column_name: "Model", priority: 3}
     transformations: [strip, upper]
     required: true

@@ -133,6 +133,16 @@ def preprocess_file(file_path: Path, run_id: str) -> PreprocessResult:
             status="needs_human_classification",
             run_id=run_id,
         )
+    if classification.form_version == "bom_tree":
+        # BOM tree dumps populate ``bom_edges`` directly; they are not
+        # change-event masters and have no mapping rule.
+        log.info("pipeline.bom_tree_deferred", file=file_path.name)
+        return PreprocessResult(
+            file_path=str(file_path),
+            status="bom_tree_deferred",
+            run_id=run_id,
+            form_version=classification.form_version,
+        )
 
     try:
         rule = load_mapping_rule(classification.form_version)

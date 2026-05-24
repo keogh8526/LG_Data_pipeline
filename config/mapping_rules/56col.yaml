@@ -1,20 +1,23 @@
-# 56col -> 96col answer schema mapping.
-# Middle form (2024.04~2024.10). Per-grade sheets (Better-1, Best-1, ...).
-# The grade is encoded in the sheet name and recorded as ``common.grade``
-# downstream (Step 4 enriches from sheet name).
+# 56col -> 96col answer schema mapping (BO24 Better/Best/Good masters).
+#
+# Real-data observation (BO24_Better_250424): the workbook has a 3-row
+# multi-header (R5 top labels, R6 sub-labels, R7 combined). The R7 hybrid
+# row carries the proper Base P/No / New P/No labels alongside the rest of
+# the R5 columns, so header_row=7. R5 alone collapses "Base/New P/No" into
+# one "Part No." column — keep that as a fallback alias.
 
 form_version: "56col"
-header_row: 1
+header_row: 7
 
 sheet_filter:
   include_patterns: ["Better.*", "Best.*", "Good.*"]
-  exclude_patterns: ["History", "Cover"]
+  exclude_patterns: ["History", "Cover", "Master", "부품등급", "부품인정"]
 
 mappings:
   base_part_no:
     sources:
       - {column_name: "Base P/No", priority: 1}
-      - {column_name: "P/no.", priority: 2}
+      - {column_name: "Part No.", priority: 2}
     transformations: [strip, upper]
     required: true
 
@@ -26,15 +29,17 @@ mappings:
 
   part_name:
     sources:
-      - {column_name: "Part Name", priority: 1}
+      - {column_name: "Class Desc.(Part Name)", priority: 1}
       - {column_name: "Class Desc.", priority: 2}
+      - {column_name: "Part Name", priority: 3}
     transformations: [strip]
     required: true
 
   bom_level:
     sources:
-      - {column_name: "BOM Level", priority: 1}
-      - {column_name: "Lvl", priority: 2}
+      - {column_name: "Level", priority: 1}
+      - {column_name: "BOM Level", priority: 2}
+      - {column_name: "Lvl", priority: 3}
     transformations: [{type: cast, to: int}]
     required: false
 
@@ -46,25 +51,29 @@ mappings:
 
   change_type:
     sources:
-      - {column_name: "구분", priority: 1}
+      - {column_name: "Classification", priority: 1}
+      - {column_name: "구분", priority: 2}
     transformations: [strip, {type: map_alias, field: change_type}]
     required: false
 
   change_point:
     sources:
-      - {column_name: "변경점", priority: 1}
+      - {column_name: "Changing Point", priority: 1}
+      - {column_name: "변경점", priority: 2}
     transformations: [strip]
     required: false
 
   change_reason:
     sources:
-      - {column_name: "변경사유", priority: 1}
+      - {column_name: "Changing Reason", priority: 1}
+      - {column_name: "변경사유", priority: 2}
     transformations: [strip]
     required: false
 
   qty:
     sources:
       - {column_name: "Qty", priority: 1}
+      - {column_name: "Quantity", priority: 2}
     transformations: [{type: cast, to: float}]
     required: false
 
