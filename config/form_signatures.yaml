@@ -30,7 +30,7 @@ versions:
         keywords: ["Common", "FMEA", "HSMS"]
         weight: 0.3
 
-  v96col:
+  96col:
     description: "현재 운용 중 양식 (2024.11~) — 실질적 정답 schema"
     threshold: 0.7
     signals:
@@ -44,7 +44,7 @@ versions:
         markers: ["CP", "PP", "DV", "PV", "PQ"]
         weight: 0.3
 
-  v56col:
+  56col:
     description: "중간 변형 (단일 등급, 2024.04~2024.10)"
     threshold: 0.7
     signals:
@@ -55,7 +55,7 @@ versions:
         keywords: ["Better", "Best", "Good"]
         weight: 0.5
 
-  v20col:
+  20col:
     description: "구버전 (2024.04 이전, 단순 단일 헤더)"
     threshold: 0.7
     signals:

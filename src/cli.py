@@ -1,9 +1,10 @@
 """Unified Typer CLI for the LG BOM preprocessing pipeline.
 
-Run with ``python -m src.cli <command>``. Step 0-2 commands:
+Run with ``python -m src.cli <command>``. Step 0-3 commands:
     inventory       scan raw Excel files into a parquet inventory
     classify        classify the form version of files
     schema-export   export the answer schema as JSON Schema
+    preprocess      run the deterministic preprocessing pipeline
 """
 
 from __future__ import annotations
@@ -14,6 +15,11 @@ import typer
 
 from src.preprocess.classify import classify_dir, classify_form
 from src.preprocess.inventory import build_inventory
+from src.preprocess.pipeline import (
+    generate_run_id,
+    preprocess_directory,
+    preprocess_file,
+)
 from src.utils.paths import INTERIM_DIR, RAW_DIR, SCHEMA_JSON_PATH
 
 app = typer.Typer(help="LG BOM 전처리 파이프라인 CLI.")
@@ -84,6 +90,39 @@ def schema_export(
 
     export_schema_json(output)
     typer.echo(f"Schema exported to {output}.")
+
+
+@app.command()
+def preprocess(
+    path: Path = typer.Argument(..., help="Excel file or directory of raw files."),
+    run_id: str = typer.Option("", help="Batch id (defaults to a fresh one)."),
+) -> None:
+    """Step 3 — classify, extract, map, normalize, resolve. Reports only."""
+    run = run_id or generate_run_id()
+    if path.is_dir():
+        summary = preprocess_directory(path, run)
+        typer.echo(f"Run {summary.run_id}: {len(summary.results)} files")
+        typer.echo(
+            f"  rows_in={summary.rows_in}  rows_out={summary.rows_out}  "
+            f"quarantined={summary.quarantine_count}"
+        )
+        for result in summary.results:
+            typer.echo(
+                f"  {Path(result.file_path).name}: {result.status} "
+                f"[{result.form_version or '-'}]  "
+                f"rows={result.rows_out}  q={result.quarantine_count}"
+            )
+        return
+
+    result = preprocess_file(path, run)
+    typer.echo(f"Run {result.run_id}")
+    typer.echo(f"  status={result.status}  form={result.form_version}")
+    typer.echo(
+        f"  rows_in={result.rows_in}  rows_out={result.rows_out}  "
+        f"quarantined={result.quarantine_count}"
+    )
+    if result.error:
+        typer.echo(f"  error={result.error}")
 
 
 if __name__ == "__main__":

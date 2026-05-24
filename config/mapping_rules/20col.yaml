@@ -1,20 +1,19 @@
-# v1.2 -> 96col answer schema mapping.
-# v1.2 is the future unified template — its filled-in real-world samples do
-# not yet exist (the v1.2 file we have is an empty template + History only).
-# These column names mirror the 96col header layout because v1.2 is supposed
-# to be a superset; revisit once 5+ real v1.2 masters arrive (DECISIONS D-007).
+# 20col -> 96col answer schema mapping.
+# Old form (pre-2024.04). Many fields are optional because the old form did
+# not carry them; missing required fields go to quarantine.
 
-form_version: "v1_2"
-header_row: 2    # group label row 1, header row 2, data from row 3.
+form_version: "20col"
+header_row: 2
 
 sheet_filter:
   include_patterns: [".*"]
-  exclude_patterns: ["History", "Cover", "Index"]
+  exclude_patterns: ["History"]
 
 mappings:
   base_part_no:
     sources:
-      - {column_name: "Base P/No", priority: 1}
+      - {column_name: "P/no.", priority: 1}
+      - {column_name: "Base P/No", priority: 2}
     transformations: [strip, upper]
     required: true
 
@@ -26,34 +25,36 @@ mappings:
 
   part_name:
     sources:
-      - {column_name: "Class Desc.", priority: 1}
-      - {column_name: "Part Name", priority: 2}
+      - {column_name: "Part Name", priority: 1}
+      - {column_name: "부품명", priority: 2}
     transformations: [strip]
     required: true
 
   bom_level:
     sources:
-      - {column_name: "BOM Level", priority: 1}
+      - {column_name: "Lvl", priority: 1}
+      - {column_name: "BOM Level", priority: 2}
     transformations: [{type: cast, to: int}]
-    required: true
+    required: false
 
   part_type:
     sources:
-      - {column_name: "Part Type", priority: 1}
+      - {column_name: "Type", priority: 1}
+      - {column_name: "Part Type", priority: 2}
     transformations: [strip]
-    required: true
+    required: false
 
   change_type:
     sources:
       - {column_name: "구분", priority: 1}
     transformations: [strip, {type: map_alias, field: change_type}]
-    required: true
+    required: false
 
   change_point:
     sources:
       - {column_name: "변경점", priority: 1}
     transformations: [strip]
-    required: true
+    required: false
 
   change_reason:
     sources:
@@ -72,4 +73,4 @@ mappings:
       - {column_name: "Model Code", priority: 1}
       - {column_name: "Base Model", priority: 2}
     transformations: [strip, upper]
-    required: true
+    required: false

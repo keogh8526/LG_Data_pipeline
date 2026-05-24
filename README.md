@@ -65,13 +65,14 @@ src/
 tests/
 ```
 
-## 사용 가능한 명령 (Step 0~2)
+## 사용 가능한 명령 (Step 0~3)
 
 | 명령 | 단계 | 설명 |
 |---|---|---|
 | `uv run python -m src.cli inventory` | Step 0 | `data/raw/` 스캔 → `data/interim/file_inventory.parquet` |
 | `uv run python -m src.cli classify <path> [--all]` | Step 1 | 양식 분류 (파일 또는 디렉토리) |
 | `uv run python -m src.cli schema-export` | Step 2 | 96col 정답 schema → JSON Schema 출력 |
+| `uv run python -m src.cli preprocess <path> [--run-id ID]` | Step 3 | classify→extract→map→normalize→resolve |
 
 ## 파이프라인 단계 (v2)
 
@@ -80,7 +81,7 @@ tests/
 | 0 | 환경, 인벤토리, golden 폴더 명세 | ✅ |
 | 1 | `config/form_signatures.yaml` + 결정론적 분류기 | ✅ |
 | 2 | 96col Pydantic schema + axioms (config-driven) | ✅ |
-| 3 | 양식별 매핑 + 정규화 + Entity Resolution | 예정 |
+| 3 | 양식별 매핑 + 정규화(10 함정) + Entity Resolution | ✅ |
 | 4 | 15지표 검증 + Quarantine + Golden diff + dry-run/commit/rollback | 예정 |
 | 5 | PostgreSQL + pgvector 적재 (5 테이블 + run_id 배치) | 예정 |
 

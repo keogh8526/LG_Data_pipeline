@@ -9,15 +9,15 @@ from src.preprocess.classify import classify_dir, classify_form, load_signatures
 # Synthetic fixture -> expected form version (ground truth).
 _EXPECTED = {
     "sample_v12.xlsx": "v1_2",
-    "sample_96col.xlsx": "v96col",
-    "sample_56col.xlsx": "v56col",
-    "sample_20col.xlsx": "v20col",
+    "sample_96col.xlsx": "96col",
+    "sample_56col.xlsx": "56col",
+    "sample_20col.xlsx": "20col",
 }
 
 
 def test_signatures_load() -> None:
     versions = load_signatures()
-    assert set(versions) == {"v1_2", "v96col", "v56col", "v20col"}
+    assert set(versions) == {"v1_2", "96col", "56col", "20col"}
 
 
 def test_all_fixtures_classified_correctly(fixture_workbooks: Path) -> None:
@@ -43,5 +43,5 @@ def test_unknown_file_falls_back(tmp_path: Path) -> None:
 
 def test_evidence_records_all_version_scores(fixture_workbooks: Path) -> None:
     result = classify_form(fixture_workbooks / "sample_96col.xlsx")
-    assert set(result.evidence) == {"v1_2", "v96col", "v56col", "v20col"}
-    assert result.evidence["v96col"] >= 0.7
+    assert set(result.evidence) == {"v1_2", "96col", "56col", "20col"}
+    assert result.evidence["96col"] >= 0.7
