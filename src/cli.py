@@ -1,14 +1,23 @@
 """Unified Typer CLI for the LG BOM preprocessing pipeline.
 
-Run with ``python -m src.cli <command>``. Step 0-3 commands:
-    inventory       scan raw Excel files into a parquet inventory
-    classify        classify the form version of files
-    schema-export   export the answer schema as JSON Schema
-    preprocess      run the deterministic preprocessing pipeline
+Run with ``python -m src.cli <command>``. Step 0-4 commands:
+
+    inventory                      scan raw Excel files into a parquet inventory
+    classify                       classify the form version of files
+    schema-export                  export the answer schema as JSON Schema
+    preprocess                     one-shot preprocessing preview (no persistence)
+
+    pipeline run <path>            full run: process + validate + diff + report
+    pipeline review --run-id ID    open the report / state for a run
+    pipeline commit --run-id ID    promote a dry-run to committed
+    pipeline rollback --run-id ID  move a committed run to rolled_back
+
+    quarantine list --run-id ID    list quarantined rows for a run
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -16,13 +25,26 @@ import typer
 from src.preprocess.classify import classify_dir, classify_form
 from src.preprocess.inventory import build_inventory
 from src.preprocess.pipeline import (
+    commit_run,
+    discover_raw_files,
     generate_run_id,
     preprocess_directory,
     preprocess_file,
+    read_state,
+    rollback_run,
+    run_pipeline,
 )
+from src.preprocess.quarantine import list_quarantined
 from src.utils.paths import INTERIM_DIR, RAW_DIR, SCHEMA_JSON_PATH
 
 app = typer.Typer(help="LG BOM 전처리 파이프라인 CLI.")
+pipeline_app = typer.Typer(help="dry-run / commit / rollback 사이클.")
+quarantine_app = typer.Typer(help="격리된 행 조회.")
+app.add_typer(pipeline_app, name="pipeline")
+app.add_typer(quarantine_app, name="quarantine")
+
+
+# --- Top-level commands ---------------------------------------------------
 
 
 @app.command()
@@ -97,7 +119,7 @@ def preprocess(
     path: Path = typer.Argument(..., help="Excel file or directory of raw files."),
     run_id: str = typer.Option("", help="Batch id (defaults to a fresh one)."),
 ) -> None:
-    """Step 3 — classify, extract, map, normalize, resolve. Reports only."""
+    """Step 3 — quick preview without persistence. Use `pipeline run` for the full cycle."""
     run = run_id or generate_run_id()
     if path.is_dir():
         summary = preprocess_directory(path, run)
@@ -123,6 +145,97 @@ def preprocess(
     )
     if result.error:
         typer.echo(f"  error={result.error}")
+
+
+# --- pipeline sub-app -----------------------------------------------------
+
+
+@pipeline_app.command("run")
+def pipeline_run(
+    path: Path = typer.Argument(
+        RAW_DIR, help="Excel file or directory (default: data/raw)."
+    ),
+    commit: bool = typer.Option(
+        False, "--commit", help="Promote to committed/ immediately."
+    ),
+) -> None:
+    """Step 4 — full pipeline: process + validate + diff + report + persist."""
+    files = (
+        discover_raw_files(path)
+        if path.is_dir()
+        else [path]
+    )
+    if not files:
+        typer.echo(f"No Excel files found under {path}.")
+        raise typer.Exit(code=1)
+
+    mode = "commit" if commit else "dry-run"
+    result = run_pipeline(files, mode=mode)
+    typer.echo(f"Run {result.run_id} [{result.status}]")
+    typer.echo(
+        f"  rows_in={result.rows_in}  rows_out={result.rows_out}  "
+        f"quarantined={result.quarantine_count}"
+    )
+    agg = result.aggregate_validation
+    if agg is not None:
+        verdict = "ACCEPTABLE" if agg.is_acceptable() else "NOT ACCEPTABLE"
+        typer.echo(f"  validation: {verdict}")
+        if not agg.is_acceptable():
+            typer.echo(f"  failing: {', '.join(agg.critical_failures())}")
+    if result.report_path:
+        typer.echo(f"  report: {result.report_path}")
+
+
+@pipeline_app.command("review")
+def pipeline_review(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Open the state and report path for a run."""
+    state = read_state(run_id)
+    if state is None:
+        typer.echo(f"Unknown run_id: {run_id}")
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps(state, indent=2, ensure_ascii=False, default=str))
+
+
+@pipeline_app.command("commit")
+def pipeline_commit(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Promote a dry-run to committed/ (Step 5 will layer DB load behind this)."""
+    try:
+        target = commit_run(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"Commit failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Committed -> {target}")
+
+
+@pipeline_app.command("rollback")
+def pipeline_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Move a committed run to rolled_back/ (Step 5 adds DB delete behind this)."""
+    try:
+        target = rollback_run(run_id)
+    except FileNotFoundError as exc:
+        typer.echo(f"Rollback failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Rolled back -> {target}")
+
+
+# --- quarantine sub-app ---------------------------------------------------
+
+
+@quarantine_app.command("list")
+def quarantine_list(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """List quarantined rows for a run."""
+    rows = list_quarantined(run_id)
+    if not rows:
+        typer.echo(f"No quarantine records for {run_id}.")
+        return
+    typer.echo(f"{len(rows)} quarantined rows for {run_id}:")
+    for row in rows[:50]:
+        typer.echo(
+            f"  [{row['severity']}] {row['source_file']}:{row['row_index']}  "
+            f"{row['stage_failed']}: {row['fail_reason']}"
+        )
+    if len(rows) > 50:
+        typer.echo(f"  ... and {len(rows) - 50} more.")
 
 
 if __name__ == "__main__":

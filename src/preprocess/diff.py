@@ -1,17 +1,21 @@
-"""Step 0/4 — golden-diff: auto pipeline output vs. user hand-work.
+"""Step 4 — golden diff: auto pipeline output vs. user hand-work.
 
-The user's hand-made preprocessing result is the ground truth. This module
-compares the automatic pipeline output against ``data/golden/`` to measure how
-often automation diverges from the human.
-
-Step 0 establishes the interface; the comparison logic is implemented in
-Step 4 (see the v2 plan). The body is deferred until then.
+The user's hand-made preprocessing result is the ground truth (see
+``data/golden/README.md``). For every raw file the auto pipeline processed,
+``diff_against_golden`` joins on a primary key (default ``base_part_no``) and
+counts row-level matches / mismatches plus per-column mismatch frequencies.
+A handful of mismatching rows are surfaced as samples for the report.
 """
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import pandas as pd
 from pydantic import BaseModel, Field
+
+_SAMPLE_LIMIT = 10
 
 
 class DiffReport(BaseModel):
@@ -23,12 +27,31 @@ class DiffReport(BaseModel):
     rows_only_in_golden: int = 0
     column_mismatches: dict[str, int] = Field(default_factory=dict)
     sample_mismatches: list[dict[str, object]] = Field(default_factory=list)
+    key: str = "base_part_no"
 
     @property
     def match_rate(self) -> float:
-        """Fraction of compared rows that match exactly."""
+        """Fraction of compared rows (key matched both sides) that match exactly."""
         total = self.rows_match + self.rows_mismatch
         return self.rows_match / total if total else 0.0
+
+
+def _values_equal(a: object, b: object) -> bool:
+    """Return True if two cell values are equal, with NaN/None tolerated.
+
+    Floats are compared as floats (NaN == NaN considered equal). Strings are
+    stripped before comparison so trailing-whitespace differences do not flip
+    the result.
+    """
+    a_null = a is None or (isinstance(a, float) and math.isnan(a))
+    b_null = b is None or (isinstance(b, float) and math.isnan(b))
+    if a_null and b_null:
+        return True
+    if a_null or b_null:
+        return False
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b
+    return str(a).strip() == str(b).strip()
 
 
 def diff_against_golden(
@@ -44,10 +67,73 @@ def diff_against_golden(
         key: Join key for row alignment.
 
     Returns:
-        A :class:`DiffReport`.
-
-    Raises:
-        NotImplementedError: Comparison logic is implemented in Step 4 (v2
-            plan); the Step 0 deliverable is this interface only.
+        A populated :class:`DiffReport`.
     """
-    raise NotImplementedError("golden diff implemented in Step 4 (v2 plan).")
+    if key not in auto_df.columns or key not in golden_df.columns:
+        raise KeyError(f"diff key {key!r} not in both DataFrames")
+
+    merged = auto_df.merge(
+        golden_df,
+        on=key,
+        how="outer",
+        suffixes=("_auto", "_golden"),
+        indicator=True,
+    )
+
+    rows_only_in_auto = int((merged["_merge"] == "left_only").sum())
+    rows_only_in_golden = int((merged["_merge"] == "right_only").sum())
+
+    both = merged[merged["_merge"] == "both"]
+    compare_columns = [
+        c for c in golden_df.columns if c != key and c in auto_df.columns
+    ]
+    column_mismatches: dict[str, int] = {c: 0 for c in compare_columns}
+    samples: list[dict[str, object]] = []
+    rows_match = 0
+    rows_mismatch = 0
+
+    for _, row in both.iterrows():
+        diffs: dict[str, object] = {}
+        for column in compare_columns:
+            auto_value = row[f"{column}_auto"]
+            golden_value = row[f"{column}_golden"]
+            if not _values_equal(auto_value, golden_value):
+                column_mismatches[column] += 1
+                diffs[column] = {"auto": auto_value, "golden": golden_value}
+        if diffs:
+            rows_mismatch += 1
+            if len(samples) < _SAMPLE_LIMIT:
+                samples.append({key: row[key], **diffs})
+        else:
+            rows_match += 1
+
+    return DiffReport(
+        rows_match=rows_match,
+        rows_mismatch=rows_mismatch,
+        rows_only_in_auto=rows_only_in_auto,
+        rows_only_in_golden=rows_only_in_golden,
+        column_mismatches={c: n for c, n in column_mismatches.items() if n},
+        sample_mismatches=samples,
+        key=key,
+    )
+
+
+def load_golden(golden_dir: Path, source_file: Path) -> pd.DataFrame | None:
+    """Return the golden DataFrame matching a raw source file, or None.
+
+    Lookup tries ``<stem>.parquet`` then ``<stem>.xlsx`` under ``golden_dir``.
+
+    Args:
+        golden_dir: Path to ``data/golden/``.
+        source_file: Raw file whose golden counterpart we want.
+
+    Returns:
+        A DataFrame or None when no golden file exists.
+    """
+    parquet = golden_dir / f"{source_file.stem}.parquet"
+    if parquet.exists():
+        return pd.read_parquet(parquet)
+    excel = golden_dir / f"{source_file.stem}.xlsx"
+    if excel.exists():
+        return pd.read_excel(excel)
+    return None
