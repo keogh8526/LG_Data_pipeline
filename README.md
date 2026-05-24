@@ -65,19 +65,24 @@ src/
 tests/
 ```
 
-## 사용 가능한 명령 (Step 0~4)
+## 사용 가능한 명령 (Step 0~5)
 
 | 명령 | 단계 | 설명 |
 |---|---|---|
 | `uv run python -m src.cli inventory` | Step 0 | `data/raw/` 스캔 → `data/interim/file_inventory.parquet` |
-| `uv run python -m src.cli classify <path> [--all]` | Step 1 | 양식 분류 (파일 또는 디렉토리) |
-| `uv run python -m src.cli schema-export` | Step 2 | 96col 정답 schema → JSON Schema 출력 |
-| `uv run python -m src.cli preprocess <path>` | Step 3 | 빠른 미리보기 (영구화 없음) |
+| `uv run python -m src.cli classify <path> [--all]` | Step 1 | 양식 분류 |
+| `uv run python -m src.cli schema-export` | Step 2 | 96col 정답 schema → JSON Schema |
+| `uv run python -m src.cli preprocess <path>` | Step 3 | 빠른 미리보기 |
 | `uv run python -m src.cli pipeline run [PATH] [--commit]` | Step 4 | 전체 run + 검증 + diff + 리포트 |
-| `uv run python -m src.cli pipeline review --run-id ID` | Step 4 | run 상태 / 리포트 경로 출력 |
 | `uv run python -m src.cli pipeline commit --run-id ID` | Step 4 | dry-run → committed (게이트 통과 시) |
 | `uv run python -m src.cli pipeline rollback --run-id ID` | Step 4 | committed → rolled_back |
 | `uv run python -m src.cli quarantine list --run-id ID` | Step 4 | 격리된 행 조회 |
+| `uv run python -m src.cli db init` | Step 5 | 테이블 + pgvector/pg_trgm 생성 |
+| `uv run python -m src.cli db load --run-id ID [--embed]` | Step 5 | 적재 (선택적으로 임베딩 생성) |
+| `uv run python -m src.cli db rollback --run-id ID` | Step 5 | DB 적재 원복 |
+| `uv run python -m src.cli db status` | Step 5 | preprocessing_runs 조회 |
+| `uv run python -m src.cli db verify --run-id ID` | Step 5 | run의 테이블별 row 카운트 |
+| `uv run python -m src.cli search "<query>"` | Step 5 | 하이브리드 pgvector + pg_trgm 검색 |
 
 ## 파이프라인 단계 (v2)
 
@@ -88,7 +93,7 @@ tests/
 | 2 | 96col Pydantic schema + axioms (config-driven) | ✅ |
 | 3 | 양식별 매핑 + 정규화(10 함정) + Entity Resolution | ✅ |
 | 4 | 15지표 검증 + Quarantine + Golden diff + dry-run/commit/rollback | ✅ |
-| 5 | PostgreSQL + pgvector 적재 (5 테이블 + run_id 배치) | 예정 |
+| 5 | PostgreSQL + pgvector 적재 (5 테이블 + run_id 배치) + 하이브리드 검색 | ✅ |
 
 ## 테스트
 

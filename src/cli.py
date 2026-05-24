@@ -1,6 +1,6 @@
 """Unified Typer CLI for the LG BOM preprocessing pipeline.
 
-Run with ``python -m src.cli <command>``. Step 0-4 commands:
+Run with ``python -m src.cli <command>``. Step 0-5 commands:
 
     inventory                      scan raw Excel files into a parquet inventory
     classify                       classify the form version of files
@@ -13,6 +13,13 @@ Run with ``python -m src.cli <command>``. Step 0-4 commands:
     pipeline rollback --run-id ID  move a committed run to rolled_back
 
     quarantine list --run-id ID    list quarantined rows for a run
+
+    db init                        create tables + (Postgres) pgvector / pg_trgm
+    db load --run-id ID            load a committed run into Postgres
+    db rollback --run-id ID        delete a run's change events from Postgres
+    db status                      list runs in preprocessing_runs
+    db verify --run-id ID          per-table row counts for a run
+    search QUERY                   hybrid pgvector + pg_trgm search
 """
 
 from __future__ import annotations
@@ -21,10 +28,16 @@ import json
 from pathlib import Path
 
 import typer
+from sqlalchemy import func, select
 
+from src.db.engine import init_db, make_engine, session_factory
+from src.db.load import load_run, update_embeddings
+from src.db.models import ChangeEvent, Model, Part, PreprocessingRun
+from src.db.rollback import rollback_run as db_rollback_run
 from src.preprocess.classify import classify_dir, classify_form
 from src.preprocess.inventory import build_inventory
 from src.preprocess.pipeline import (
+    COMMITTED_ROOT,
     commit_run,
     discover_raw_files,
     generate_run_id,
@@ -40,8 +53,10 @@ from src.utils.paths import INTERIM_DIR, RAW_DIR, SCHEMA_JSON_PATH
 app = typer.Typer(help="LG BOM 전처리 파이프라인 CLI.")
 pipeline_app = typer.Typer(help="dry-run / commit / rollback 사이클.")
 quarantine_app = typer.Typer(help="격리된 행 조회.")
+db_app = typer.Typer(help="PostgreSQL 적재 / 롤백 / 상태.")
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(quarantine_app, name="quarantine")
+app.add_typer(db_app, name="db")
 
 
 # --- Top-level commands ---------------------------------------------------
@@ -236,6 +251,105 @@ def quarantine_list(run_id: str = typer.Option(..., "--run-id")) -> None:
         )
     if len(rows) > 50:
         typer.echo(f"  ... and {len(rows) - 50} more.")
+
+
+# --- db sub-app ----------------------------------------------------------
+
+
+@db_app.command("init")
+def db_init() -> None:
+    """Step 5 — create tables and (on Postgres) apply schema.sql."""
+    engine = make_engine()
+    init_db(engine)
+    typer.echo(f"Initialized {engine.url}.")
+
+
+@db_app.command("load")
+def db_load(
+    run_id: str = typer.Option(..., "--run-id"),
+    embed: bool = typer.Option(False, "--embed", help="Also update embeddings."),
+) -> None:
+    """Load a committed run into Postgres (relational + optional vector)."""
+    run_dir = COMMITTED_ROOT / run_id
+    if not run_dir.exists():
+        typer.echo(f"No committed run: {run_id}")
+        raise typer.Exit(code=1)
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        result = load_run(session, run_id, run_dir)
+        if embed:
+            update_embeddings(session, run_id)
+    typer.echo(f"Loaded {run_id}: {result.rows_inserted}")
+
+
+@db_app.command("rollback")
+def db_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Delete the change events / details / bom edges for ``run_id``."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        result = db_rollback_run(session, run_id)
+    typer.echo(f"Rolled back {run_id}: {result.rows_deleted}")
+
+
+@db_app.command("status")
+def db_status() -> None:
+    """List runs in preprocessing_runs."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        rows = session.execute(select(PreprocessingRun)).scalars().all()
+    if not rows:
+        typer.echo("No runs.")
+        return
+    for row in rows:
+        typer.echo(
+            f"  {row.run_id}  status={row.status}  rows={row.rows_inserted}"
+        )
+
+
+@db_app.command("verify")
+def db_verify(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Per-table row counts for ``run_id`` (sanity check after load/rollback)."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    counts: dict[str, int] = {}
+    with Session() as session:
+        for label, model in (("parts", Part), ("models", Model), ("change_events", ChangeEvent)):
+            counts[label] = (
+                session.execute(
+                    select(func.count()).select_from(model).where(model.run_id == run_id)
+                ).scalar_one()
+            )
+    typer.echo(f"{run_id}: {counts}")
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Free-text query."),
+    top_k: int = typer.Option(10, "--top-k"),
+    form_version: str = typer.Option(
+        "", "--form-version", help="Optional VersionRAG filter."
+    ),
+) -> None:
+    """Hybrid pgvector + pg_trgm search over change_events."""
+    from src.db.search import hybrid_search
+
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        hits = hybrid_search(
+            session,
+            query,
+            top_k=top_k,
+            form_version=form_version or None,
+        )
+    for hit in hits:
+        typer.echo(
+            f"  [{hit.score:.3f}] event_id={hit.event_id} "
+            f"({hit.form_version}): {hit.change_point}"
+        )
 
 
 if __name__ == "__main__":
