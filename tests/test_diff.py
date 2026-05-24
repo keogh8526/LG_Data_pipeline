@@ -49,6 +49,15 @@ def test_whitespace_difference_does_not_flip_match() -> None:
     assert report.rows_match == 1
 
 
+def test_numeric_dtype_difference_does_not_flip_match() -> None:
+    # qty read as int vs float across auto/golden must match.
+    auto = pd.DataFrame([_row("AB1234567", qty=1)])
+    golden = pd.DataFrame([_row("AB1234567", qty=1.0)])
+    report = diff_against_golden(auto, golden)
+    assert report.rows_match == 1
+    assert report.rows_mismatch == 0
+
+
 def test_missing_key_raises() -> None:
     with pytest.raises(KeyError):
         diff_against_golden(pd.DataFrame({"x": [1]}), pd.DataFrame({"y": [1]}))

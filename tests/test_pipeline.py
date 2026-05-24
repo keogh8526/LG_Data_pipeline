@@ -14,9 +14,11 @@ from src.preprocess.pipeline import (
     preprocess_directory,
     preprocess_file,
     read_state,
+    reprocess_quarantine,
     rollback_run,
     run_pipeline,
 )
+from src.preprocess.quarantine import QuarantineRecord, save_quarantine
 
 
 @pytest.fixture
@@ -144,3 +146,78 @@ def test_commit_unknown_run_raises(redirected_paths: Path) -> None:
 def test_rollback_unknown_run_raises(redirected_paths: Path) -> None:
     with pytest.raises(FileNotFoundError):
         rollback_run("does_not_exist")
+
+
+def test_reprocess_empty_returns_zero_counts(redirected_paths: Path) -> None:
+    summary = reprocess_quarantine("nonexistent")
+    assert summary == {
+        "new_run_id": None,
+        "records": 0,
+        "now_pass": 0,
+        "still_fail": 0,
+    }
+
+
+def test_reprocess_writes_new_run_with_split_buckets(
+    redirected_paths: Path,
+) -> None:
+    # Seed quarantine for a fictitious source run. One row is a valid
+    # change_point (would normalize cleanly) but was originally quarantined
+    # for a different field; the other has an invalid base_part_no that will
+    # still fail post_validate.
+    records = [
+        QuarantineRecord(
+            row_index=0,
+            source_file="raw/foo.xlsx",
+            source_sheet="Best-1",
+            raw_row={
+                "base_part_no": "AB1234567",
+                "change_point": "내열 보강",
+            },
+            stage_failed="model_code",
+            fail_reason="model_code: required empty",
+            severity="error",
+            run_id="run_src",
+            quarantined_at="2026-05-24T00:00:00+00:00",
+        ),
+        QuarantineRecord(
+            row_index=1,
+            source_file="raw/foo.xlsx",
+            source_sheet="Best-1",
+            raw_row={"base_part_no": "123", "change_point": "bad"},
+            stage_failed="base_part_no",
+            fail_reason="base_part_no: post_validate(part_no) failed",
+            severity="warning",
+            run_id="run_src",
+            quarantined_at="2026-05-24T00:00:00+00:00",
+        ),
+    ]
+    save_quarantine(records, "run_src", "foo")
+
+    summary = reprocess_quarantine("run_src")
+    assert summary["records"] == 2
+    assert summary["now_pass"] == 1
+    assert summary["still_fail"] == 1
+    new_run = summary["new_run_id"]
+    assert new_run and (pipeline_mod.DRY_RUN_ROOT / new_run / "state.json").exists()
+    state = read_state(new_run)
+    assert state and state["mode"] == "reprocess"
+    assert state["reprocessed_from"] == "run_src"
+
+
+def test_run_pipeline_writes_audit_parquet(
+    fixture_workbooks: Path, redirected_paths: Path
+) -> None:
+    files = sorted(fixture_workbooks.glob("*.xlsx"))
+    result = run_pipeline(files, mode="dry-run")
+    audit_path = (result.run_dir or pipeline_mod.DRY_RUN_ROOT / result.run_id) / "audit.parquet"
+    # At least one fixture (v1.2) has values that get normalized; audit must
+    # therefore exist with at least one row.
+    assert audit_path.exists()
+    import pandas as pd
+
+    audit_df = pd.read_parquet(audit_path)
+    assert not audit_df.empty
+    assert {"stage", "field_name", "before", "after", "note", "source_file"} <= set(
+        audit_df.columns
+    )

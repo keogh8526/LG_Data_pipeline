@@ -45,3 +45,24 @@ def test_evidence_records_all_version_scores(fixture_workbooks: Path) -> None:
     result = classify_form(fixture_workbooks / "sample_96col.xlsx")
     assert set(result.evidence) == {"v1_2", "96col", "56col", "20col"}
     assert result.evidence["96col"] >= 0.7
+
+
+def test_sheet_results_present_for_multi_sheet_workbook(fixture_workbooks: Path) -> None:
+    result = classify_form(fixture_workbooks / "sample_v12.xlsx")
+    # Multi-sheet: file-level still resolves to v1_2 (sheet_exists fires),
+    # but per-sheet scoring excludes file-level signals.
+    assert result.form_version == "v1_2"
+    assert set(result.sheet_results) == {"변경점List", "History"}
+    main = result.sheet_results["변경점List"]
+    # Without the History bonus, the main sheet alone falls short of the
+    # threshold but still has a positive v1_2 score from its own header text.
+    assert main.evidence["v1_2"] > 0
+
+
+def test_sheet_results_for_single_sheet_fixtures(fixture_workbooks: Path) -> None:
+    # Single-sheet workbooks: sheet-level decision agrees with file-level.
+    result = classify_form(fixture_workbooks / "sample_96col.xlsx")
+    assert len(result.sheet_results) == 1
+    only = next(iter(result.sheet_results.values()))
+    assert only.form_version == "96col"
+    assert only.form_version == result.form_version

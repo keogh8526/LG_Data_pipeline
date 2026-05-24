@@ -19,6 +19,7 @@ import pandas as pd
 import yaml
 
 from src.ontology import axioms
+from src.utils.audit import AuditTrail
 from src.utils.paths import NORMALIZATION_PATH
 
 # Strings (case-insensitive, trimmed) that mean "no value".
@@ -52,10 +53,11 @@ class NormalizationResult:
 
 @dataclass
 class NormalizeReport:
-    """Per-run summary of normalization failures."""
+    """Per-run summary of normalization failures + the audit trail."""
 
     rows: int
     failures: list[dict[str, Any]] = dc_field(default_factory=list)
+    audit: AuditTrail | None = None
 
 
 def is_null(value: Any) -> bool:
@@ -250,7 +252,8 @@ def normalize_dataframe(
     """
     cfg = load_normalization_config()
     out = df.copy()
-    report = NormalizeReport(rows=len(out))
+    audit = AuditTrail(run_id=run_id)
+    report = NormalizeReport(rows=len(out), audit=audit)
     existing_reasons = (
         out["_quarantine_reason"].fillna("").tolist()
         if "_quarantine_reason" in out.columns
@@ -262,6 +265,15 @@ def normalize_dataframe(
         for idx, value in enumerate(out[column].tolist()):
             result = normalize_field(value, column, cfg)
             new_values.append(result.value)
+            # Record every transformation, even passes, so the trail is complete.
+            if result.applied_steps:
+                audit.record(
+                    stage="normalize",
+                    field_name=column,
+                    before=value,
+                    after=result.value,
+                    note=",".join(result.applied_steps),
+                )
             if not result.success:
                 reason = f"{column}: {result.fail_reason}"
                 existing_reasons[idx] = (

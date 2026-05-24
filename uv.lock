@@ -198,15 +198,6 @@ nvtx = [
 ]
 
 [[package]]
-name = "diskcache"
-version = "5.6.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3f/21/1c1ffc1a039ddcc459db43cc108658f32c57d271d7289a2794e401d0fdb6/diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc", size = 67916, upload-time = "2023-08-31T06:12:00.316Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/27/4570e78fc0bf5ea0ca45eb1de3818a23787af9b390c0b0a0033a1b8236f9/diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19", size = 45550, upload-time = "2023-08-31T06:11:58.822Z" },
-]
-
-[[package]]
 name = "et-xmlfile"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -482,7 +473,6 @@ name = "lg-bom-mvp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "diskcache" },
     { name = "jsonschema" },
     { name = "ollama" },
     { name = "openpyxl" },
@@ -513,7 +503,6 @@ embed = [
 
 [package.metadata]
 requires-dist = [
-    { name = "diskcache", specifier = ">=5.6" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
     { name = "jsonschema", specifier = ">=4.22" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },

@@ -44,6 +44,7 @@ from src.preprocess.pipeline import (
     preprocess_directory,
     preprocess_file,
     read_state,
+    reprocess_quarantine,
     rollback_run,
     run_pipeline,
 )
@@ -251,6 +252,27 @@ def quarantine_list(run_id: str = typer.Option(..., "--run-id")) -> None:
         )
     if len(rows) > 50:
         typer.echo(f"  ... and {len(rows) - 50} more.")
+
+
+@quarantine_app.command("reprocess")
+def quarantine_reprocess(run_id: str = typer.Option(..., "--run-id")) -> None:
+    """Re-run normalize on the quarantined rows with current rules.
+
+    Writes a fresh run id with the now-passing rows under ``dry_run/`` and
+    moves still-failing rows into that run's quarantine bucket. Use after
+    fixing axioms / normalization rules.
+    """
+    summary = reprocess_quarantine(run_id)
+    if summary["records"] == 0:
+        typer.echo(f"No quarantine records for {run_id}.")
+        return
+    typer.echo(
+        f"Reprocessed {summary['records']} records from {run_id} "
+        f"-> {summary['new_run_id']}"
+    )
+    typer.echo(
+        f"  now_pass={summary['now_pass']}  still_fail={summary['still_fail']}"
+    )
 
 
 # --- db sub-app ----------------------------------------------------------

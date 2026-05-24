@@ -39,9 +39,10 @@ class DiffReport(BaseModel):
 def _values_equal(a: object, b: object) -> bool:
     """Return True if two cell values are equal, with NaN/None tolerated.
 
-    Floats are compared as floats (NaN == NaN considered equal). Strings are
-    stripped before comparison so trailing-whitespace differences do not flip
-    the result.
+    Numeric values are compared as floats when both sides cast cleanly (so
+    ``1`` matches ``1.0`` and ``"2"`` matches ``2``). Otherwise comparison is
+    over stripped string forms, so trailing-whitespace differences do not flip
+    the result. NaN equals NaN here.
     """
     a_null = a is None or (isinstance(a, float) and math.isnan(a))
     b_null = b is None or (isinstance(b, float) and math.isnan(b))
@@ -49,8 +50,10 @@ def _values_equal(a: object, b: object) -> bool:
         return True
     if a_null or b_null:
         return False
-    if isinstance(a, float) and isinstance(b, float):
-        return a == b
+    try:
+        return float(a) == float(b)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pass
     return str(a).strip() == str(b).strip()
 
 

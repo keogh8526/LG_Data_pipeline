@@ -32,7 +32,11 @@ from src.preprocess.diff import DiffReport, diff_against_golden, load_golden
 from src.preprocess.extract import extract_rows
 from src.preprocess.map import apply_mapping, load_mapping_rule
 from src.preprocess.normalize import NormalizeReport, normalize_dataframe
-from src.preprocess.quarantine import extract_quarantined, save_quarantine
+from src.preprocess.quarantine import (
+    extract_quarantined,
+    list_quarantined,
+    save_quarantine,
+)
 from src.preprocess.report import build_markdown_report
 from src.preprocess.resolve import resolve_models, resolve_parts
 from src.preprocess.validate import ValidationReport, validate_dataframe
@@ -262,9 +266,27 @@ def run_pipeline(
     results = [preprocess_file(path, run) for path in files]
 
     file_validations: list[tuple[str, ValidationReport, DiffReport | None]] = []
+    audit_records: list[dict[str, object]] = []
     for result in results:
         validation, diff = _persist_file(result, run_dir)
         file_validations.append((result.file_path, validation, diff))
+        if result.normalize_report and result.normalize_report.audit:
+            for entry in result.normalize_report.audit.to_records():
+                # Serialize raw before/after to strings so the parquet column
+                # has a single dtype regardless of source field.
+                entry["before"] = (
+                    None if entry["before"] is None else str(entry["before"])
+                )
+                entry["after"] = (
+                    None if entry["after"] is None else str(entry["after"])
+                )
+                entry["source_file"] = result.file_path
+                audit_records.append(entry)
+
+    if audit_records:
+        pd.DataFrame(audit_records).to_parquet(
+            run_dir / "audit.parquet", index=False
+        )
 
     aggregate = _aggregate_validation(results, file_validations, run)
 
@@ -408,6 +430,99 @@ def read_state(run_id: str) -> dict[str, object] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --- Quarantine reprocess ------------------------------------------------
+
+
+def reprocess_quarantine(run_id: str) -> dict[str, object]:
+    """Re-run normalization on the quarantined rows of an existing run.
+
+    Useful after a rule fix: re-attempt failed rows with the current
+    ``axioms.yaml`` / ``normalization.yaml`` and split them into now-pass and
+    still-fail buckets under a fresh run id.
+
+    Args:
+        run_id: The originating run whose quarantine to reprocess.
+
+    Returns:
+        A summary dict with ``new_run_id``, ``records``, ``now_pass``,
+        ``still_fail``.
+    """
+    records = list_quarantined(run_id)
+    if not records:
+        log.info("pipeline.reprocess.empty", from_run=run_id)
+        return {
+            "new_run_id": None,
+            "records": 0,
+            "now_pass": 0,
+            "still_fail": 0,
+        }
+
+    new_run = generate_run_id()
+    new_run_dir = DRY_RUN_ROOT / new_run
+    (new_run_dir / "files").mkdir(parents=True, exist_ok=True)
+
+    by_file: dict[str, list[dict[str, object]]] = {}
+    for record in records:
+        raw = record["raw_row"]
+        raw_dict = dict(raw) if not isinstance(raw, dict) else raw
+        by_file.setdefault(str(record["source_file"]), []).append(raw_dict)
+
+    total_now_pass = 0
+    total_still_fail = 0
+    timestamp = datetime.now(timezone.utc).isoformat()
+    for source_file, rows in by_file.items():
+        df = pd.DataFrame(rows)
+        if "_quarantine_reason" in df.columns:
+            df = df.drop(columns=["_quarantine_reason"])
+        normalized, _report = normalize_dataframe(df, new_run)
+        normalized["source_file"] = source_file
+        normalized["run_id"] = new_run
+        normalized["extracted_at"] = timestamp
+
+        pass_mask = normalized["_quarantine_reason"].isna()
+        passing = normalized[pass_mask].reset_index(drop=True)
+        failing = normalized[~pass_mask].reset_index(drop=True)
+        total_now_pass += len(passing)
+        total_still_fail += len(failing)
+
+        stem = Path(source_file).stem
+        if not passing.empty:
+            passing.to_parquet(
+                new_run_dir / "files" / f"{stem}.parquet", index=False
+            )
+        if not failing.empty:
+            still_fail_records = extract_quarantined(failing, new_run, source_file)
+            save_quarantine(still_fail_records, new_run, stem)
+
+    _write_state(
+        new_run_dir,
+        {
+            "run_id": new_run,
+            "status": "dry_run_complete",
+            "mode": "reprocess",
+            "started_at": timestamp,
+            "reprocessed_from": run_id,
+            "records": len(records),
+            "now_pass": total_now_pass,
+            "still_fail": total_still_fail,
+            "acceptable": False,
+        },
+    )
+    log.info(
+        "pipeline.reprocess.done",
+        from_run=run_id,
+        new_run=new_run,
+        now_pass=total_now_pass,
+        still_fail=total_still_fail,
+    )
+    return {
+        "new_run_id": new_run,
+        "records": len(records),
+        "now_pass": total_now_pass,
+        "still_fail": total_still_fail,
+    }
 
 
 # --- Directory entry points ----------------------------------------------

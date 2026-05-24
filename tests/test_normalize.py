@@ -69,6 +69,23 @@ def test_normalize_dataframe_attaches_quarantine_reason() -> None:
     assert report.failures and report.failures[0]["field"] == "base_part_no"
 
 
+def test_normalize_dataframe_records_audit_trail() -> None:
+    df = pd.DataFrame(
+        {
+            "base_part_no": ["ab1234567"],
+            "change_point": ["내열\r\n보강"],
+        }
+    )
+    _out, report = normalize_dataframe(df, run_id="run_test")
+    assert report.audit is not None
+    entries = report.audit.entries
+    fields_touched = {e.field_name for e in entries}
+    assert {"base_part_no", "change_point"} <= fields_touched
+    # Audit notes record the chain of applied steps.
+    for entry in entries:
+        assert entry.note  # one or more comma-joined step names
+
+
 def test_extract_handles_merged_and_formula_cells(tmp_path: Path) -> None:
     workbook = make_merged_formula_workbook(tmp_path / "merged.xlsx")
     rule = load_mapping_rule("56col")
