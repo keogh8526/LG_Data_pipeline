@@ -31,6 +31,13 @@ class SheetData:
         return max((len(r) for r in self.rows), default=0)
 
 
+def _strip_leading_empty(rows: list[list[Any]]) -> list[list[Any]]:
+    """Drop fully-empty leading rows so openpyxl matches calamine's compact view."""
+    while rows and all(c is None or c == "" for c in rows[0]):
+        rows.pop(0)
+    return rows
+
+
 def _openpyxl_sheets(path: Path) -> list[SheetData]:
     """Read every sheet via openpyxl (may raise on malformed workbooks)."""
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
@@ -40,7 +47,9 @@ def _openpyxl_sheets(path: Path) -> list[SheetData]:
             rows: list[list[Any]] = []
             for row in sheet.iter_rows(values_only=True):
                 rows.append(list(row))
-            sheets.append(SheetData(name=sheet.title, rows=rows))
+            sheets.append(
+                SheetData(name=sheet.title, rows=_strip_leading_empty(rows))
+            )
         return sheets
     finally:
         workbook.close()
@@ -52,7 +61,12 @@ def _calamine_sheets(path: Path) -> list[SheetData]:
 
     workbook = CalamineWorkbook.from_path(path)
     return [
-        SheetData(name=name, rows=workbook.get_sheet_by_name(name).to_python())
+        SheetData(
+            name=name,
+            rows=_strip_leading_empty(
+                workbook.get_sheet_by_name(name).to_python()
+            ),
+        )
         for name in workbook.sheet_names
     ]
 

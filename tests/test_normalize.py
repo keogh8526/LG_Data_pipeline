@@ -106,3 +106,25 @@ def test_extract_handles_merged_and_formula_cells(tmp_path: Path) -> None:
     assert df["Base P/No"].iloc[0] == "AB1234567"
     # Formula cell read as its cached value.
     assert df["Qty"].iloc[0] == 2
+
+
+def test_extract_sheet_meta_pulls_model_code_from_meta_header() -> None:
+    """Real-data meta-header pattern (Base model label + value cell)."""
+    from src.preprocess.extract import extract_sheet_meta
+    from src.utils.excel import SheetData
+
+    sheet = SheetData(
+        name="변경 부품 list(BO605G1S5)",
+        rows=[
+            ["New & Changing Part Development List"],
+            ["Base model", None, None, None, None, None, "모델명(등급)", "WS7D7610B / Cc\n(호주)"],
+            [None, None, None, None, None, None, "Buyer명", "LGEAP"],
+            [None, None, None, None, None, None, "Brand", "LG"],
+            [None, None, None, None, None, None, "Set P/No.", "TAP35707209"],
+        ],
+    )
+    meta = extract_sheet_meta(sheet)
+    assert meta["model_code"] == "WS7D7610B"
+    assert meta["buyer"] == "LGEAP"
+    assert meta["brand"] == "LG"
+    assert meta["set_part_no"] == "TAP35707209"

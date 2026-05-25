@@ -99,3 +99,22 @@
   그대로 반영하되 hatchling+uv 유지.
 - 영향: pyproject.toml.
 - 재검토 조건: 팀 표준이 poetry로 굳어지면 그때 전환.
+
+## D-009: 실데이터 1차 통과 후 룰·axiom 캘리브레이션
+- 날짜: 2026-05-25
+- 컨텍스트: 사용자가 업로드한 LG 마스터 5건(20col / 56col / 96col / bom_tree
+  × 2)을 파이프라인에 통과시킨 결과 첫 통과율 0%, 메타 헤더에 model_code가
+  몰려 있음 + axiom 패턴이 실데이터 형식보다 좁음을 발견.
+- 결정 — 4가지 캘리브레이션:
+  1. `extract_sheet_meta()` 신규: 시트 상단 8행에서 `Base model | ... | <코드>`
+     같은 label/value 쌍을 자동 추출해 `_meta_*` 컬럼으로 broadcast.
+     mapping 룰의 `model_code` source 우선순위에 `_meta_model_code` 추가.
+  2. axiom `model_code` 패턴: `^[A-Z]{2,5}\d{3,5}[A-Z]?(\.[A-Z0-9]+)?$`에서
+     `^[A-Z][A-Z0-9]{3,14}(\.[A-Z0-9.]+)?$`로 완화 — 실데이터 `WS7D7610B`
+     (영문/숫자 혼재) 수용.
+  3. 96col `part_type`: 실데이터에서 데이터 행에 비어 있어 required=false 처리.
+  4. `_strip_leading_empty`: openpyxl과 calamine의 선행 빈 행 처리 통일 →
+     `header_row` 설정이 backend 독립적으로 동작.
+- 영향: 5개 파일 처리 통과율 0% → **72%** (513/713 clean rows). 남은 28%는
+  대부분 빈 행/요약 행/sub-header 행으로 정상 격리.
+- 재검토 조건: 9개 이상의 실 파일이 더 도착했을 때 룰 보강 + 정확도 회귀 측정.

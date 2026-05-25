@@ -81,8 +81,10 @@ mappings:
     required: false
 
   model_code:
+    # 20col-Transitional masters use the same R2 meta-header pattern as 96col.
     sources:
       - {column_name: "Model Code", priority: 1}
       - {column_name: "Base Model", priority: 2}
+      - {column_name: "_meta_model_code", priority: 3}
     transformations: [strip, upper]
     required: false

@@ -78,8 +78,11 @@ mappings:
     required: false
 
   model_code:
+    # 56col masters carry the model code in the R2 ``Base Model/Suffix`` meta
+    # cell — extract_sheet_meta broadcasts it as ``_meta_model_code``.
     sources:
       - {column_name: "Base Model", priority: 1}
       - {column_name: "Model Code", priority: 2}
+      - {column_name: "_meta_model_code", priority: 3}
     transformations: [strip, upper]
     required: true
