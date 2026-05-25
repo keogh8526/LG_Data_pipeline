@@ -316,6 +316,14 @@ def main() -> dict[str, Path]:
 
     # Step 0
     inv = build_inventory(RAW_DIR)
+    if inv.empty:
+        raise SystemExit(
+            f"\nNo Excel files found in {RAW_DIR}.\n"
+            f"Real data is excluded from git (.gitignore) — copy your .xlsx\n"
+            f"files into data/raw/ first, then rerun this script.\n"
+            f"\nExample (PowerShell):\n"
+            f"  copy C:\\path\\to\\*.xlsx data\\raw\\\n"
+        )
     inv.to_parquet(Path("data/interim/file_inventory.parquet"), index=False)
     artifacts["inventory"] = viz_inventory(inv)
 
