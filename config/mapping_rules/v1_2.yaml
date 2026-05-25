@@ -1,0 +1,75 @@
+# v1.2 -> 96col answer schema mapping.
+# v1.2 is the future unified template — its filled-in real-world samples do
+# not yet exist (the v1.2 file we have is an empty template + History only).
+# These column names mirror the 96col header layout because v1.2 is supposed
+# to be a superset; revisit once 5+ real v1.2 masters arrive (DECISIONS D-007).
+
+form_version: "v1_2"
+header_row: 2    # group label row 1, header row 2, data from row 3.
+
+sheet_filter:
+  include_patterns: [".*"]
+  exclude_patterns: ["History", "Cover", "Index"]
+
+mappings:
+  base_part_no:
+    sources:
+      - {column_name: "Base P/No", priority: 1}
+    transformations: [strip, upper]
+    required: true
+
+  new_part_no:
+    sources:
+      - {column_name: "New P/No", priority: 1}
+    transformations: [strip, upper]
+    required: false
+
+  part_name:
+    sources:
+      - {column_name: "Class Desc.", priority: 1}
+      - {column_name: "Part Name", priority: 2}
+    transformations: [strip]
+    required: true
+
+  bom_level:
+    sources:
+      - {column_name: "BOM Level", priority: 1}
+    transformations: [{type: cast, to: int}]
+    required: true
+
+  part_type:
+    sources:
+      - {column_name: "Part Type", priority: 1}
+    transformations: [strip]
+    required: true
+
+  change_type:
+    sources:
+      - {column_name: "구분", priority: 1}
+    transformations: [strip, {type: map_alias, field: change_type}]
+    required: true
+
+  change_point:
+    sources:
+      - {column_name: "변경점", priority: 1}
+    transformations: [strip]
+    required: true
+
+  change_reason:
+    sources:
+      - {column_name: "변경사유", priority: 1}
+    transformations: [strip]
+    required: false
+
+  qty:
+    sources:
+      - {column_name: "Qty", priority: 1}
+    transformations: [{type: cast, to: float}]
+    required: false
+
+  model_code:
+    sources:
+      - {column_name: "Model Code", priority: 1}
+      - {column_name: "Base Model", priority: 2}
+    transformations: [strip, upper]
+    required: true

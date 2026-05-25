@@ -1,0 +1,96 @@
+# 96col -> 96col identity mapping (answer schema).
+#
+# Source column names are the real LG header names; this file documents them
+# and applies the same minimal cleanup applied to every form. Sub-header rows
+# below the column header (DMS keys, 필수/옵션 markers, Q-Map labels) are
+# left to the quarantine pass — they fail the required-empty check naturally.
+
+form_version: "96col"
+header_row: 9    # multi-header R1~R8 above; real column names at row 9.
+
+sheet_filter:
+  include_patterns: ["변경 부품", "변경부품", "Change.*Part", "Better.*", "Best.*"]
+  exclude_patterns: ["부품등급", "부품인정", "History", "Cover", "Index", "심의회"]
+
+mappings:
+  base_part_no:
+    sources:
+      - {column_name: "Base P/No", priority: 1}
+      - {column_name: "P/no.", priority: 2}
+    transformations: [strip, upper]
+    required: true
+
+  new_part_no:
+    sources:
+      - {column_name: "New P/No", priority: 1}
+    transformations: [strip, upper]
+    required: false
+
+  part_name:
+    sources:
+      - {column_name: "Class Desc.(Part Name)", priority: 1}
+      - {column_name: "Class Desc.", priority: 2}
+      - {column_name: "부품명", priority: 3}
+    transformations: [strip]
+    required: true
+
+  bom_level:
+    sources:
+      - {column_name: "BOM Level", priority: 1}
+      - {column_name: "Lvl", priority: 2}
+      - {column_name: "Level", priority: 3}
+    transformations: [{type: cast, to: int}]
+    required: true
+
+  part_type:
+    # 실데이터 BO24-B700 96col은 Part Type을 데이터 행에 안 채움 (R8 그룹헤더만
+    # 'Part Type' label). required=false로 두고 quarantine은 다른 필수 필드가
+    # 가린다.
+    sources:
+      - {column_name: "Part Type", priority: 1}
+    transformations: [strip]
+    required: false
+
+  change_type:
+    sources:
+      - {column_name: "구분", priority: 1}
+      - {column_name: "Classification", priority: 2}
+    transformations: [strip, {type: map_alias, field: change_type}]
+    required: true
+    allowed: ["New", "Change", "Carry-over"]
+
+  change_point:
+    sources:
+      - {column_name: "변경점", priority: 1}
+      - {column_name: "Changing Point", priority: 2}
+      - {column_name: "Change Point", priority: 3}
+    transformations: [strip]
+    required: true
+
+  change_reason:
+    sources:
+      - {column_name: "변경사유", priority: 1}
+      - {column_name: "Changing Reason", priority: 2}
+    transformations: [strip]
+    required: false
+
+  qty:
+    sources:
+      - {column_name: "Qty", priority: 1}
+      - {column_name: "Quantity", priority: 2}
+      - {column_name: "Quanty", priority: 3}    # real-data typo
+    transformations: [{type: cast, to: float}]
+    required: false
+
+  model_code:
+    # Per-row model code is rare in 96col masters — the model lives in the
+    # meta header (R2). ``_meta_model_code`` is injected by
+    # ``extract_sheet_meta`` from the ``Base model`` label/value pair so every
+    # data row inherits it.
+    sources:
+      - {column_name: "Model Code", priority: 1}
+      - {column_name: "Base Model", priority: 2}
+      - {column_name: "Model", priority: 3}
+      - {column_name: "_meta_model_code", priority: 4}
+    transformations: [strip, upper]
+    required: true

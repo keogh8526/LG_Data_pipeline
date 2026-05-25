@@ -1,0 +1,90 @@
+# 20col -> 96col answer schema mapping.
+#
+# Real-data observation: the "20col" Transitional masters (e.g.
+# 240430_BDO30_SKS_Transitional_MasterList) carry the same R9 column-header
+# layout as 96col — they're a narrower variant of the same template, not the
+# pre-2024.04 simple single-header form. The header row therefore lives at
+# row 9 here too. Required-field strictness is relaxed because the narrower
+# form drops columns the full 96col carries.
+
+form_version: "20col"
+header_row: 9
+
+sheet_filter:
+  include_patterns: [".*"]
+  exclude_patterns: ["부품등급", "부품인정", "History", "Cover", "Index", "심의회"]
+
+mappings:
+  base_part_no:
+    sources:
+      - {column_name: "Base P/No", priority: 1}
+      - {column_name: "P/no.", priority: 2}
+    transformations: [strip, upper]
+    required: true
+
+  new_part_no:
+    sources:
+      - {column_name: "New P/No", priority: 1}
+    transformations: [strip, upper]
+    required: false
+
+  part_name:
+    sources:
+      - {column_name: "Class Desc.(Part Name)", priority: 1}
+      - {column_name: "Class Desc.", priority: 2}
+      - {column_name: "Part Name", priority: 3}
+    transformations: [strip]
+    required: false
+
+  bom_level:
+    sources:
+      - {column_name: "BOM Level", priority: 1}
+      - {column_name: "Lvl", priority: 2}
+      - {column_name: "Level", priority: 3}
+    transformations: [{type: cast, to: int}]
+    required: false
+
+  part_type:
+    sources:
+      - {column_name: "Part Type", priority: 1}
+      - {column_name: "Type", priority: 2}
+    transformations: [strip]
+    required: false
+
+  change_type:
+    sources:
+      - {column_name: "구분", priority: 1}
+      - {column_name: "Classification", priority: 2}
+    transformations: [strip, {type: map_alias, field: change_type}]
+    required: false
+
+  change_point:
+    sources:
+      - {column_name: "변경점", priority: 1}
+      - {column_name: "Changing Point", priority: 2}
+    transformations: [strip]
+    required: false
+
+  change_reason:
+    sources:
+      - {column_name: "변경사유", priority: 1}
+      - {column_name: "Changing Reason", priority: 2}
+    transformations: [strip]
+    required: false
+
+  qty:
+    sources:
+      - {column_name: "Qty", priority: 1}
+      - {column_name: "Quantity", priority: 2}
+      - {column_name: "Quanty", priority: 3}
+    transformations: [{type: cast, to: float}]
+    required: false
+
+  model_code:
+    # 20col-Transitional masters use the same R2 meta-header pattern as 96col.
+    sources:
+      - {column_name: "Model Code", priority: 1}
+      - {column_name: "Base Model", priority: 2}
+      - {column_name: "_meta_model_code", priority: 3}
+    transformations: [strip, upper]
+    required: false

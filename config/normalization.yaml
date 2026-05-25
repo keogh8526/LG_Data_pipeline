@@ -1,0 +1,92 @@
+# Step 3 — per-field value normalization rules.
+#
+# Each field declares a sequence of deterministic steps. Steps:
+#   strip                                      remove leading/trailing whitespace
+#   upper / lower                              case fold
+#   unicode_normalize  (form: NFC|NFKC|...)    Unicode normalization form
+#   collapse_whitespace                        collapse runs of whitespace to one
+#   regex_remove       (pattern: ...)          delete matches
+#   max_length         (value: int)            truncate at length
+#   cast               (to: int|float|str)     type cast
+#   range_check        (min: ..., max: ...)    numeric range
+#   map_alias          (field: <axiom_key>)    alias normalization via axioms
+#
+# post_validate references an axiom key (e.g. ``part_no``) — the field value
+# must pass the matching ``validate_*`` function.
+#
+# on_fail policy when a step / post_validate fails:
+#   quarantine  -> record the row for human review (default)
+#   truncate    -> clamp to the limit / max_length window (for max_length, range_check)
+#   set_null    -> drop the value to NULL and continue
+
+fields:
+  part_no:
+    steps:
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: upper}
+      - {type: regex_remove, pattern: '[\s\-_]'}
+    post_validate: part_no
+    on_fail: quarantine
+
+  model_code:
+    steps:
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: upper}
+    post_validate: model_code
+    on_fail: quarantine
+
+  bom_level:
+    steps:
+      - {type: cast, to: int}
+      - {type: range_check, min: 0, max: 10}
+    on_fail: quarantine
+
+  change_type:
+    steps:
+      - {type: strip}
+      - {type: map_alias, field: change_type}
+    on_fail: quarantine
+
+  grade:
+    steps:
+      - {type: strip}
+      - {type: map_alias, field: grade}
+    on_fail: quarantine
+
+  change_point:
+    steps:
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: collapse_whitespace}
+      - {type: max_length, value: 2000}
+    on_fail: truncate
+
+  change_reason:
+    steps:
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: collapse_whitespace}
+      - {type: max_length, value: 2000}
+    on_fail: truncate
+
+  part_name:
+    steps:
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: collapse_whitespace}
+      - {type: max_length, value: 200}
+    on_fail: truncate
+
+  part_type:
+    steps:
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+    on_fail: set_null
+
+  qty:
+    steps:
+      - {type: cast, to: float}
+      - {type: range_check, min: 0, max: 9999}
+    on_fail: quarantine
