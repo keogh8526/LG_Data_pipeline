@@ -43,8 +43,13 @@ viz = [
 ui = [
     "streamlit>=1.30",
     "streamlit-float>=0.3",
-    "tiktoken>=0.7",      # build_rag.py가 사용했던 토크나이저 (UI 일부가 import)
+    "tiktoken>=0.7",      # 토크나이저 (UI 일부가 import)
     "python-dotenv>=1.0", # 원본 rag_client가 load_dotenv 호출 — 호환 위해
+    # UI 내부 별도 chroma 컬렉션(chroma_structured)을 BOM 업로드 시 runtime
+    # 인덱싱·검색에 사용. dev_part_master(PostgreSQL)와는 분리된 캐시 용도.
+    "chromadb>=0.5",
+    # 심의회 PPT(.pptx) 업로드 + 모델 정보 추출
+    "python-pptx>=1.0",
 ]
 dev = [
     "pytest>=8.2",

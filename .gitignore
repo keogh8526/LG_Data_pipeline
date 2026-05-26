@@ -29,6 +29,11 @@ data/golden/*
 .pytest_cache/
 .mypy_cache/
 
+# UI runtime cache (chromadb persistent client — bge-m3 임베딩 인덱스)
+src/ui/chroma_structured/
+src/ui/data/
+src/ui/.streamlit/
+
 # Env
 .env
 

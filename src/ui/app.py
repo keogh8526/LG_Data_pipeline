@@ -467,7 +467,9 @@ def unwrap_rag_json(doc_text: str) -> dict | None:
 # - 기존 get_collection() 컬렉션과 완전히 분리
 # =========================================================
 STRUCTURED_DB_DIR = str(Path(__file__).resolve().parent / "chroma_structured")
-STRUCTURED_COLLECTION_NAME = "bom_structured_v3"
+# D-012: v3 → v4. v3은 default(onnx) embedder로 만들어져 Windows에서 [Errno 22]
+# 유발. v4은 우리 bge-m3 임베딩을 직접 전달하는 새 컬렉션.
+STRUCTURED_COLLECTION_NAME = "bom_structured_v4"
 
 # ── Chroma 클라이언트 캐싱 ──
 _STRUCT_CLIENT = None
@@ -483,9 +485,24 @@ def get_structured_collection():
     global _STRUCT_COLLECTION
     if _STRUCT_COLLECTION is None:
         client = get_structured_client()
+        # D-012: embedding_function을 명시적으로 None — chromadb의 기본 onnxruntime
+        # 모델 자동 다운로드/실행을 막아 Windows [Errno 22] 회피. 우리 bge-m3로
+        # 직접 임베딩해 upsert(embeddings=...) 형태로 전달.
+        from chromadb.utils.embedding_functions import EmbeddingFunction
+
+        class _NullEmbedder(EmbeddingFunction):
+            def __call__(self, input):
+                # chromadb는 embedding_function이 호출되면 List[List[float]] 기대.
+                # upsert에서 embeddings 인자 직접 전달하면 이 함수는 호출되지 않음.
+                raise RuntimeError(
+                    "structured collection은 embeddings 인자를 직접 전달해야 합니다. "
+                    "upsert_structured_docs / query_structured_docs 참조."
+                )
+
         _STRUCT_COLLECTION = client.get_or_create_collection(
             name=STRUCTURED_COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"}
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=_NullEmbedder(),
         )
     return _STRUCT_COLLECTION
 
@@ -495,12 +512,17 @@ def reset_structured_collection():
 
 def query_structured_docs(query_text: str, top_k: int = 20, where: dict | None = None) -> list[dict]:
     """
-    구조화 컬렉션 조회 결과를 run_search가 쓰는 dict 포맷으로 변환
+    구조화 컬렉션 조회 결과를 run_search가 쓰는 dict 포맷으로 변환.
+
+    D-012: query_texts 대신 bge-m3로 미리 임베딩한 query_embeddings 전달.
     """
     col = get_structured_collection()
 
+    from src.embed.embedder import embed_texts
+    q_emb = embed_texts([query_text])[0]
+
     kwargs = {
-        "query_texts": [query_text],
+        "query_embeddings": [q_emb],
         "n_results": top_k,
     }
     if where:
@@ -1031,7 +1053,10 @@ def build_structured_docs_from_base(df_base: pd.DataFrame, model: str, dev_grade
 
 def upsert_structured_docs(docs: list[dict]) -> int:
     """
-    구조화 컬렉션(v3)에 upsert
+    구조화 컬렉션(v3)에 upsert.
+
+    D-012: chromadb 기본 embedding 함수 대신 우리 bge-m3 (Ollama)로 직접
+    임베딩해 전달. Windows에서 onnxruntime path 문제로 [Errno 22] 회피.
     """
     if not docs:
         return 0
@@ -1041,7 +1066,16 @@ def upsert_structured_docs(docs: list[dict]) -> int:
     documents = [d["document"] for d in docs]   # embedding_text
     metadatas = [d["metadata"] for d in docs]   # rag_json 포함
 
-    col.upsert(ids=ids, documents=documents, metadatas=metadatas)  # type: ignore
+    # bge-m3로 documents 일괄 임베딩 (ENABLE_EMBEDDING은 rag_client에서 자동 활성화)
+    from src.embed.embedder import embed_texts
+    embeddings = embed_texts(documents)
+
+    col.upsert(  # type: ignore
+        ids=ids,
+        documents=documents,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
     return len(docs)
 
 def make_base_snapshot(df: pd.DataFrame, file_name: str = ""):
@@ -5535,7 +5569,13 @@ with st.container():
 
             st.success(f"✅ BOM 업로드 완료 ({len(df_bom)}행) | 기준모델: {st.session_state.get('bom_model','')}")
         except Exception as e:
-            st.error(f"BOM 업로드 실패: {e}")
+            import traceback
+            tb_text = traceback.format_exc()
+            st.error(f"BOM 업로드 실패: {type(e).__name__}: {e}")
+            with st.expander("🔍 디버그 상세 (스택 추적)"):
+                st.code(tb_text, language="python")
+            # 콘솔 로그도 같이
+            print(f"[BOM_UPLOAD_ERROR] {type(e).__name__}: {e}\n{tb_text}")
 
     st.markdown("**개발 유형 및 등급 확정 심의회 PPT 업로드**")
     ppt_up = st.file_uploader(
