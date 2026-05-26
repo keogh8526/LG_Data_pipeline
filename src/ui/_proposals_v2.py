@@ -56,9 +56,19 @@ def _dedup_hits_by_part(hits: list[dict]) -> list[dict]:
     return out
 
 
-def _index_base_snapshot(base_snapshot: dict) -> tuple[dict, dict]:
+def _snapshot_field(snap: Any, key: str, default: Any = None) -> Any:
+    """BaseMasterSnapshot은 dataclass, 직접 만든 dict도 호환되게 양쪽 access."""
+    if snap is None:
+        return default
+    if isinstance(snap, dict):
+        return snap.get(key, default)
+    # dataclass / attribute access
+    return getattr(snap, key, default)
+
+
+def _index_base_snapshot(base_snapshot: Any) -> tuple[dict, dict]:
     """base BOM rows → (pno_norm → row, desc_upper → row 리스트) 인덱스."""
-    rows = base_snapshot.get("rows") or []
+    rows = _snapshot_field(base_snapshot, "rows") or []
     by_pno: dict[str, dict] = {}
     by_desc: dict[str, list[dict]] = {}
     for r in rows:
@@ -173,7 +183,10 @@ def generate_proposals_from_hits(
     if not hits or not change_items:
         return []
 
-    base_snapshot = base_snapshot or {}
+    # base_snapshot은 dict이거나 BaseMasterSnapshot dataclass 둘 다 가능.
+    # None일 땐 빈 dict로 normalize (이후 _snapshot_field가 dict.get으로 처리).
+    if base_snapshot is None:
+        base_snapshot = {}
     intent = intent or {
         "raw_text": "\n".join(change_items),
         "target_object": "",
@@ -224,7 +237,7 @@ def generate_proposals_from_hits(
     # base L1 추정 — base_snapshot의 첫 lvl=.1 row
     base_l1_desc = ""
     base_l1_pno = ""
-    for r in base_snapshot.get("rows") or []:
+    for r in _snapshot_field(base_snapshot, "rows") or []:
         if str(r.get("lvl", "")).strip() in (".1", "1"):
             base_l1_desc = r.get("part_name") or ""
             base_l1_pno = r.get("part_no") or ""
