@@ -34,8 +34,8 @@ from sqlalchemy import func, select
 
 from src.db.engine import init_db, make_engine, session_factory
 from src.db.load import load_run, update_embeddings
-from src.db.models import ChangeEvent, Model, Part, PreprocessingRun
-from src.db.rollback import rollback_run as db_rollback_run
+from src.db.models import DevPartMaster, IngestionLog, SourceFile
+from src.db.rollback import rollback_run as db_rollback_run  # stub; rewritten in Phase 5
 from src.preprocess.classify import classify_dir, classify_file
 from src.preprocess.inventory import build_inventory
 from src.preprocess.pipeline import (
@@ -280,32 +280,14 @@ def db_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
 
 @db_app.command("status")
 def db_status() -> None:
-    engine = make_engine()
-    Session = session_factory(engine)
-    with Session() as session:
-        rows = session.execute(select(PreprocessingRun)).scalars().all()
-    if not rows:
-        typer.echo("No runs.")
-        return
-    for row in rows:
-        typer.echo(f"  {row.run_id}  status={row.status}  rows={row.rows_inserted}")
+    """ingestion_log 상태 요약 (D-012 Phase 6에서 본 구현 도입)."""
+    typer.echo("db status is being reworked for dev_part_master in Phase 6.")
 
 
 @db_app.command("verify")
-def db_verify(run_id: str = typer.Option(..., "--run-id")) -> None:
-    engine = make_engine()
-    Session = session_factory(engine)
-    counts: dict[str, int] = {}
-    with Session() as session:
-        for label, model in (
-            ("parts", Part),
-            ("models", Model),
-            ("change_events", ChangeEvent),
-        ):
-            counts[label] = session.execute(
-                select(func.count()).select_from(model).where(model.run_id == run_id)
-            ).scalar_one()
-    typer.echo(f"{run_id}: {counts}")
+def db_verify(file_id: int | None = typer.Option(None, "--file-id")) -> None:
+    """테이블별 카운트 출력 (D-012 Phase 6에서 본 구현 도입)."""
+    typer.echo("db verify is being reworked for dev_part_master in Phase 6.")
 
 
 # --- agent-search (BOM Agent retrieve 데모용 — D-011 후) ----------------
@@ -323,32 +305,13 @@ def agent_search(
     이전 v2.0 7-case Query Router + RRF + Rerank + Graph는 D-011 Phase D로
     제거. 본 명령은 ``src/db/search_simple.py:search_change_events``의 thin wrapper.
     """
-    from src.db.search_simple import search_change_events
-
-    if not any([pno, part_name, change_reason]):
-        typer.echo("적어도 하나의 옵션(--pno / --part-name / --reason)을 지정하세요.")
-        raise typer.Exit(code=1)
-
-    engine = make_engine()
-    Session = session_factory(engine)
-    with Session() as session:
-        hits = search_change_events(
-            session,
-            pno=pno or None,
-            part_name_keyword=part_name or None,
-            change_reason_keyword=change_reason or None,
-            top_k=top_k,
-        )
-    if not hits:
-        typer.echo("(no hits)")
-        return
-    for h in hits:
-        typer.echo(
-            f"  event_id={str(h.event_id)[:8]}... ({h.form_version}) "
-            f"part={h.part_no} model={h.new_model_code} grade={h.grade}"
-        )
-        if h.narrative_text:
-            typer.echo(f"     {h.narrative_text[:160]}...")
+    # D-012: search_simple.py 삭제됨. dev_part_master 검색은 팀원 ETL_PG 측 RAG가
+    # 담당하며, 본 CLI는 적재 책임만 가짐. 임시 메시지만 출력.
+    typer.echo(
+        "agent-search was removed with the v2.0 search layer. "
+        "Use dev_part_master + bge-m3 directly via psql or the ETL_PG side."
+    )
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

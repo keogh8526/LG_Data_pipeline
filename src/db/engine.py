@@ -1,9 +1,9 @@
-"""Step 5 — SQLAlchemy engine + schema bootstrap.
+"""D-012 — SQLAlchemy engine + dev_part_master schema bootstrap.
 
 ``make_engine`` reads connection settings from env (or accepts an explicit URL,
 useful for tests with ``sqlite:///:memory:``). ``init_db`` creates the ORM
-tables and — on Postgres only — applies ``schema.sql`` for the pgvector and
-pg_trgm extensions / indexes.
+tables and — on Postgres only — applies ``schema_dev_part_master.sql`` for
+pgvector / pg_trgm extensions and indexes.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from src.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_SQL_PATH = Path(__file__).resolve().parent / "schema.sql"
+SCHEMA_SQL_PATH = Path(__file__).resolve().parent / "schema_dev_part_master.sql"
 
 
 def database_url() -> str:
@@ -33,14 +33,7 @@ def database_url() -> str:
 
 
 def make_engine(url: str | None = None) -> Engine:
-    """Create a SQLAlchemy Engine for the given URL (or env-derived default).
-
-    Args:
-        url: Optional explicit SQLAlchemy URL.
-
-    Returns:
-        A configured :class:`sqlalchemy.Engine`.
-    """
+    """Create a SQLAlchemy Engine for the given URL (or env-derived default)."""
     return create_engine(url or database_url())
 
 
@@ -50,21 +43,22 @@ def session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def init_db(engine: Engine) -> None:
-    """Create all tables, plus Postgres-only extensions and indexes.
+    """Create all tables + Postgres extensions/indexes via raw SQL.
 
-    Args:
-        engine: A bound SQLAlchemy Engine.
+    On Postgres: ``schema_dev_part_master.sql``이 모든 테이블 / 확장 / 인덱스를
+    함께 생성한다 (vector / pg_trgm 확장 의존). Base.metadata.create_all은
+    skip 해서 ``vector(1024)`` 타입 충돌을 회피.
+
+    SQLite (단위 테스트): ORM ``create_all``만 수행 (Vector → JSON variant).
     """
-    Base.metadata.create_all(engine)
     if engine.dialect.name != "postgresql":
-        log.info("db.init.skipped_postgres_extensions", dialect=engine.dialect.name)
+        Base.metadata.create_all(engine)
+        log.info("db.init.sqlite_only", dialect=engine.dialect.name)
         return
 
-    statements = [
-        stmt.strip()
-        for stmt in SCHEMA_SQL_PATH.read_text(encoding="utf-8").split(";")
-        if stmt.strip() and not stmt.strip().startswith("--")
-    ]
+    sql = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
+    # 단순 split — 본 파일은 PL/pgSQL 함수 없음, ';' 기준 안전.
+    statements = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
