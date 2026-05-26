@@ -118,3 +118,60 @@
 - 영향: 5개 파일 처리 통과율 0% → **72%** (513/713 clean rows). 남은 28%는
   대부분 빈 행/요약 행/sub-header 행으로 정상 격리.
 - 재검토 조건: 9개 이상의 실 파일이 더 도착했을 때 룰 보강 + 정확도 회귀 측정.
+
+## D-010: 어댑터 동적 헤더 anchor detection (변경부품 list family)
+- 날짜: 2026-05-26
+- 컨텍스트: 합성 fixture 기준 `HEADER_ROWS=[2,4]`는 OK였지만 실 95~97col
+  파일의 진짜 헤더가 row 8(대분류 "Common"/"공통") + row 9(leaf 컬럼명)에 있고
+  데이터는 row 13부터. 위치 가정이 실데이터에서 깨져 quarantine 100%.
+- 결정: `src/preprocess/adapters/changing_parts_list.py`에 `_detect_header_anchor()`
+  추가. col 2가 "Common"/"공통"인 row를 찾아 anchor + leaf row + data start를
+  동적 결정. 실패 시 합성 fixture 호환 `[2,4]`로 fallback.
+- 영향: 실 4 파일 e2e 적재 통과율 0% → 30% (column_dictionary 학습 결합 후).
+- 재검토 조건: 다른 family(신규부품/UAE/base_master)에서 같은 동적 detection 패턴
+  적용 가능성 검토.
+
+## D-011: v2.0 간소화 (BOM Agent 시나리오 한정)
+- 날짜: 2026-05-26
+- 컨텍스트: v2.0의 "보험적" 설계(payload 100%/multi-vector 5/Router 7-case/
+  Graph Expansion/ER 3-band/needs_review_queue/form_versions/test_plans/
+  hsms_records/drbfm 도메인)가 BOM Agent 시나리오 한정에서 *오버킬*. BOM
+  Agent의 retrieve/select_base/apply_diff는 Core 10필드(part_no/part_name/
+  change_point/change_reason/bom_level/classification/supplier 등)만 사용 →
+  보험 설계 비용(파일 35개, LOC 7466)이 운영 가치 대비 큼.
+- 결정 — 7 Phase로 간소화:
+  - **Phase A** (drbfm/hsms/test_plan/mold 인프라): TestPlan/HsmsRecord ORM,
+    multi_vector.py/reranker.py, activity_master_meta 어댑터, narrativize 6
+    조건절, new_parts 담당자 슬롯 모두 제거.
+  - **Phase B** (payload 100% → extra_fields): Core 13 매핑된 헤더는 제외,
+    Core 안 들어간 컬럼만 extra_fields로 보존. semantic_text 컬럼 제거.
+    validate 15+1 → 7 핵심 지표 (referential_integrity/duplicate_rate/
+    outlier_rate/null_rate_optional/payload_preservation 모두 제거).
+    threshold 완화 (value_format 0.98→0.95, row_preservation 0.95→0.90,
+    null_rate_required 0.01→0.05, axiom_violation 0.02→0.05).
+  - **Phase C** (ER + 부속 테이블): resolve.py 3-band → 정확 일치만,
+    suppliers/part_names 함수 삭제. NeedsReview + FormVersion ORM 삭제 →
+    5 테이블 (parts/models/bom_edges/change_events/preprocessing_runs).
+  - **Phase D** (search 패키지 통째): src/search/ 전체 + query_router.yaml +
+    db/search.py 삭제. db/search_simple.py 1개 신규 (search_change_events).
+    HNSW 인덱스 5→1, pg_trgm 3→1.
+  - **Phase E** (column_dictionary): drbfm_note/test_plan_keys 섹션 + 모든
+    entry의 is_semantic/embedding_target/semantic_anchor 키 제거.
+  - **Phase F** (narrativize): 6 조건절(drbfm/hsms/mold/test/supplier/nonstd)
+    + payload_triggers 제거. 핵심 절(part_meta/model_meta/base_part/
+    change_point/change_reason/stage)만 유지.
+  - **Phase G**: CLI search 제거, agent-search 신규. 문서 4종 동기화.
+- 측정 효과 (commit별 누적):
+  - Phase A: -3 파일 (multi_vector/reranker/activity_master_meta), -590 LOC
+  - Phase B: payload→extra_fields, -151 LOC
+  - Phase C: -203 LOC (resolve 단순화 + 2 ORM 삭제)
+  - Phase D: -8 파일 (src/search/ 통째), 신규 +1 (search_simple)
+  - Phase E: -68 LOC (column_dict 축소)
+  - Phase F: -94 LOC (narrativize 단순화)
+- 영향: 35 파일 → ~15, 7466 LOC → ~3500 추정. 5 테이블, 1 벡터, 6 검증 지표.
+- 재검토 조건:
+  - LLM-기반 답변에서 drbfm/hsms/시험/금형 정보가 필요해지면 → 도메인 컬럼
+    extra_fields에서 꺼내 사용 또는 재추가.
+  - 모델 코드/부품명 fuzzy 검색이 요청되면 → resolve.py에 3-band 재도입.
+  - 벡터 1M+ 또는 query rerank 정확도 < 70% → multi-vector + bge-reranker
+    재도입 검토.
