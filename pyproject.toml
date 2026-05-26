@@ -39,6 +39,13 @@ embed = [
 viz = [
     "matplotlib>=3.8",
 ]
+# Streamlit BOM Agent UI (src/ui/, 260508 통합). Optional — CLI는 ui 없이도 동작.
+ui = [
+    "streamlit>=1.30",
+    "streamlit-float>=0.3",
+    "tiktoken>=0.7",      # build_rag.py가 사용했던 토크나이저 (UI 일부가 import)
+    "python-dotenv>=1.0", # 원본 rag_client가 load_dotenv 호출 — 호환 위해
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

@@ -436,5 +436,52 @@ def retrieve_hybrid(
     _print_hits(hits, "hybrid")
 
 
+# --- app (Streamlit UI) launcher -----------------------------------------
+
+ui_app = typer.Typer(help="Streamlit BOM Agent UI launcher (src/ui/).")
+app.add_typer(ui_app, name="app")
+
+
+@ui_app.command("run")
+def app_run(
+    port: int = typer.Option(8501, "--port"),
+    host: str = typer.Option("localhost", "--host"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="브라우저 자동 열기."),
+) -> None:
+    """streamlit run src/ui/app.py 실행.
+
+    requires 'ui' extra: uv sync --extra ui
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    ui_app_path = Path(__file__).resolve().parent / "ui" / "app.py"
+    if not ui_app_path.exists():
+        typer.echo(f"UI app not found: {ui_app_path}")
+        raise typer.Exit(code=1)
+
+    # Streamlit 첫 실행 시 email prompt skip (대화형 stdin 비활성화)
+    creds_dir = Path.home() / ".streamlit"
+    creds_dir.mkdir(parents=True, exist_ok=True)
+    creds_file = creds_dir / "credentials.toml"
+    if not creds_file.exists():
+        creds_file.write_text('[general]\nemail = ""\n', encoding="utf-8")
+
+    cmd = [
+        sys.executable, "-m", "streamlit", "run", str(ui_app_path),
+        "--server.port", str(port),
+        "--server.address", host,
+        "--server.headless", "true",
+        "--browser.gatherUsageStats", "false",
+    ]
+    typer.echo(f"Launching: {' '.join(cmd)}")
+    typer.echo(f"  → http://{host}:{port}")
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f"http://{host}:{port}")
+    subprocess.run(cmd, check=False)
+
+
 if __name__ == "__main__":
     app()
