@@ -3,19 +3,20 @@
 # 헤더명(path 포함) → Core 필드 매핑. 신규 양식이 들어와도 자동으로 Core를
 # 추출할 수 있게 함. 운영 중 사람 검토로 누적 성장하는 "성장형" 파일.
 #
-# - exact:       정확 일치 우선
-# - fuzzy_keywords: Levenshtein ≥0.85 fallback
-# - sheet_meta_path: 시트 상단 라벨/값 페어에서 추출 (행2 컬럼 N)
-# - sheet_name_pattern: 시트명에서 추출 (grade 등)
-# - cell_value_mapping: 셀 값 자체를 캐노니컬로 매핑 (change_type 등)
-# - is_semantic: 임베딩 대상 여부
-# - embedding_target: multi_vector 어느 벡터로 갈지
+# - exact:               정확 일치 우선
+# - fuzzy_keywords:      Levenshtein ≥0.85 fallback
+# - sheet_meta_path:     시트 상단 라벨/값 페어에서 추출 (행2 컬럼 N)
+# - sheet_name_pattern:  시트명에서 추출 (grade 등)
+# - cell_value_mapping:  셀 값 자체를 캐노니컬로 매핑 (change_type 등)
+# - derived_from_buyer_code: buyer 코드에서 region 도출
+#
+# D-011 Phase E: is_semantic / embedding_target / semantic_anchor 필드 제거
+# (multi-vector 5개 → narrative_emb 단일로 축소되며 의미 없어짐).
 
 # ── Core 13필드 ─────────────────────────────────────────────────────
 
 part_no:
   description: "부품의 유일 식별 코드 (10자리)"
-  semantic_anchor: "이 부품을 다른 부품과 구분하는 코드"
   exact:
     # 합성 fixture 형식
     - "공통 > 부품 P/No"
@@ -43,12 +44,10 @@ part_no:
     - "P/no."   # 이미 위에 있지만 명시
     - "P/No."
   fuzzy_keywords: ["P/N", "부품번호", "Part Number"]
-  is_semantic: false
   is_required: true
 
 part_name:
   description: "부품명/품명/형상명"
-  semantic_anchor: "부품이 무엇인지를 설명하는 한국어 이름"
   exact:
     - "공통 > 품명"
     - "공통 > 품명(형상명)"
@@ -65,7 +64,6 @@ part_name:
     - "품명"
     - "품명(형상명)"
   fuzzy_keywords: ["부품 이름", "Part Name"]
-  is_semantic: false
   is_required: true
 
 base_part_no:
@@ -82,7 +80,6 @@ base_part_no:
     - "기존 P/No"
     - "Base P/No."
     - "Original P/No."
-  is_semantic: false
 
 new_model_code:
   description: "새 모델 코드 (변경 후 적용 모델)"
@@ -97,7 +94,6 @@ new_model_code:
     row: 2
     col: 12
   fuzzy_keywords: ["프로젝트", "신규모델"]
-  is_semantic: false
   is_required: true
 
 base_model_code:
@@ -111,7 +107,6 @@ base_model_code:
   sheet_meta_path:
     row: 2
     col: 9
-  is_semantic: false
 
 grade:
   description: "부품 등급 (Best-1/Better-1/Good-1 BK 등)"
@@ -122,13 +117,11 @@ grade:
     - "부품 등급"
     - "Grade"
   sheet_name_pattern: "(Best|Better|Good)\\s*-?\\s*[12](\\s*(BK|STS))?"
-  is_semantic: false
   is_required: true
 
 region:
   description: "지역 코드 (EUR/SJ/EAP 등)"
   derived_from_buyer_code: true
-  is_semantic: false
 
 change_type:
   description: "변경 유형 (New/Change/Carry-over)"
@@ -169,7 +162,6 @@ change_type:
     "Carry-over": "Carry-over"
     "Keep": "Carry-over"
     "K": "Carry-over"
-  is_semantic: false
   is_required: true
 
 event_stage:
@@ -180,11 +172,9 @@ event_stage:
     - "Stage"
     - "Phase"
   cell_value_pattern: "(CP|PP|DV|PV|PQ|MP|PreMP)"
-  is_semantic: false
 
 change_point:
   description: "변경점 자유텍스트 — 무엇이 바뀌었는지"
-  semantic_anchor: "부품이 어떻게 바뀌었는지를 서술한 자유텍스트"
   exact:
     - "DRBFM > 변경점"
     - "DRBFM > 변경 점"
@@ -196,12 +186,9 @@ change_point:
     - "Change Point"
     - "Change point"
   fuzzy_keywords: ["변경 내용", "변경 사항"]
-  is_semantic: true
-  embedding_target: "change_point_emb"
 
 change_reason:
   description: "변경 사유 — 왜 바꾸는지"
-  semantic_anchor: "이 변경의 동기·배경·이유"
   exact:
     - "DRBFM > 변경 사유"
     - "DRBFM > 변경사유"
@@ -215,8 +202,6 @@ change_reason:
     - "변경 사유"
     - "Change Reason"
     - "Reason"
-  is_semantic: true
-  embedding_target: "change_reason_emb"
 
 bom_level:
   description: "BOM 트리 깊이 (0~10)"
@@ -232,7 +217,6 @@ bom_level:
     - "BOM Level"
     - "Level"
     - "Lv"
-  is_semantic: false
 
 part_type:
   description: "부품 유형 (사출/Assy/전장/단품)"
@@ -256,34 +240,9 @@ part_type:
     "Electronic": "전장"
     "단품": "단품"
     "Single": "단품"
-  is_semantic: false
 
-# ── Payload 전용 (Core 아님, 임베딩 대상) ───────────────────────────
-
-drbfm_note:
-  description: "DRBFM 코멘트 — 리스크 분석"
-  semantic_anchor: "이 변경이 일으킬 수 있는 failure mode와 대응책"
-  exact:
-    - "DRBFM > DRBFM 코멘트"
-    - "DRBFM > 코멘트"
-    - "DRBFM"
-    - "DRBFM Note"
-  is_semantic: true
-  embedding_target: "drbfm_emb"
-
-# 시험 관련 키들 — payload에서 모아 test_plan_emb 소스로 결합
-test_plan_keys:
-  description: "test_plan_emb 소스 (payload에서 결합)"
-  source_keys:
-    - "시험 > 부품인정시험 항목"
-    - "시험 > 시험 항목"
-    - "시험 > 시험 책임자"
-    - "시험 > 시험 규격"
-    - "시험기획"
-    - "Test Items"
-    - "Test Plan"
-  is_semantic: true
-  embedding_target: "test_plan_emb"
+# D-011 Phase E: drbfm_note + test_plan_keys 제거 (multi-vector 삭제됨).
+# is_semantic / embedding_target 필드도 더 이상 사용 X (column_dict.py 갱신).
 
 # ── Buyer code → region 사전 (axioms.yaml에도 있지만 dict lookup 편의용) ──
 

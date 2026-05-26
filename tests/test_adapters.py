@@ -26,10 +26,10 @@ def test_changing_parts_extracts_core(fixture_workbooks: Path):
     assert first.core.get("part_no") == "AGG74419321"
     assert first.core.get("part_name") == "Packing Assembly"
     assert first.core.get("change_point")
-    # payload 보존 (원본 컬럼이 그대로 살아있는지)
+    # payload 보존 (원본 컬럼이 그대로 살아있는지). D-011 후에도 ExtractedRow.payload는
+    # 어댑터 내부에서 모든 헤더를 받아옴 (pipeline에서 extra_fields로 분리).
     assert any("DRBFM" in k for k in first.payload.keys())
-    # semantic_text: change_point/change_reason/DRBFM 코멘트가 들어옴
-    assert first.semantic
+    # D-011 Phase E: semantic dict는 더 이상 채워지지 않음 (멀티 vector 제거).
     # source_meta
     assert first.source_meta["form_version"] == "변경부품_list_96"
 

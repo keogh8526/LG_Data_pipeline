@@ -83,8 +83,6 @@ def extract_base_master_24(
             core_field = cdict.lookup(header)
             if core_field and value not in (None, ""):
                 core[core_field] = cdict.map_cell_value(core_field, value)
-                if cdict.is_semantic(header):
-                    semantic[header] = normalize_cell_text(value)
 
         # grade/new_model_code 누락 시 sentinel 채움 (Pydantic 필수 통과)
         if not core.get("grade"):

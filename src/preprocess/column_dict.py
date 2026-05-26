@@ -36,14 +36,12 @@ def _normalize_header(s: str) -> str:
 
 @dataclass
 class FieldEntry:
-    """한 Core 필드의 매핑 사전 entry."""
+    """한 Core 필드의 매핑 사전 entry (D-011 Phase E 후)."""
 
     field_name: str
     exact: list[str] = field(default_factory=list)
     fuzzy_keywords: list[str] = field(default_factory=list)
-    is_semantic: bool = False
     is_required: bool = False
-    embedding_target: str | None = None
     sheet_meta_path: dict[str, int] | None = None
     sheet_name_pattern: str | None = None
     cell_value_mapping: dict[str, str] | None = None
@@ -93,20 +91,6 @@ class ColumnDictionary:
                 return name
         return None
 
-    def is_semantic(self, header_path: str) -> bool:
-        name = self.lookup(header_path)
-        if name is None:
-            return False
-        entry = self.fields.get(name)
-        return bool(entry and entry.is_semantic)
-
-    def embedding_target(self, header_path: str) -> str | None:
-        name = self.lookup(header_path)
-        if name is None:
-            return None
-        entry = self.fields.get(name)
-        return entry.embedding_target if entry else None
-
     def required_fields(self) -> list[str]:
         return [name for name, entry in self.fields.items() if entry.is_required]
 
@@ -145,9 +129,7 @@ def load_column_dictionary() -> ColumnDictionary:
             field_name=name,
             exact=list(body.get("exact", [])),
             fuzzy_keywords=list(body.get("fuzzy_keywords", [])),
-            is_semantic=bool(body.get("is_semantic", False)),
             is_required=bool(body.get("is_required", False)),
-            embedding_target=body.get("embedding_target"),
             sheet_meta_path=body.get("sheet_meta_path"),
             sheet_name_pattern=body.get("sheet_name_pattern"),
             cell_value_mapping=body.get("cell_value_mapping"),

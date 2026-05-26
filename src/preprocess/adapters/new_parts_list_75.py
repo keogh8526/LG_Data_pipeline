@@ -63,8 +63,6 @@ def extract_new_parts_list_75(
             core_field = cdict.lookup(header_path)
             if core_field and value not in (None, ""):
                 core[core_field] = cdict.map_cell_value(core_field, value)
-                if cdict.is_semantic(header_path):
-                    semantic[header_path] = normalize_cell_text(value)
 
         # Pydantic 필수 필드 fallback
         if not core.get("grade"):

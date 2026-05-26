@@ -67,8 +67,6 @@ def extract_v1_2_template(
             core_field = cdict.lookup(header)
             if core_field and value not in (None, ""):
                 core[core_field] = cdict.map_cell_value(core_field, value)
-                if cdict.is_semantic(header):
-                    semantic[header] = normalize_cell_text(value)
 
         # Pydantic 필수 필드 fallback
         if not core.get("grade"):

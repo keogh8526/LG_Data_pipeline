@@ -55,8 +55,6 @@ def extract_uae_dev_list(
             core_field = cdict.lookup(header)
             if core_field and value not in (None, ""):
                 core[core_field] = cdict.map_cell_value(core_field, value)
-                if cdict.is_semantic(header):
-                    semantic[header] = normalize_cell_text(value)
         # Pydantic 필수 필드 fallback
         if not core.get("grade"):
             core["grade"] = "unknown"

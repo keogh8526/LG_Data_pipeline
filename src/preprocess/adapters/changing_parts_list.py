@@ -204,8 +204,7 @@ def extract_changing_parts_list_family(
             if core_field is not None:
                 mapped = cdict.map_cell_value(core_field, value)
                 core[core_field] = mapped
-                if cdict.is_semantic(header_path):
-                    semantic[header_path] = normalize_cell_text(value)
+                # D-011 Phase E: semantic 채움 제거 (semantic dict 미사용).
 
         # 시트 메타 주입 (위치 9/12 fallback)
         if not core.get("base_model_code") and meta.base_model_code:
