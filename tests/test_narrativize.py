@@ -1,4 +1,8 @@
-"""v2.0 narrativizer 회귀 (preprocessing_v2.md §6-1 예시)."""
+"""v2.0 (D-011 Phase F 후) narrativizer 회귀.
+
+이전 6 조건절(drbfm/hsms/mold/test/supplier/nonstd) + payload_triggers 검증은
+제거. 핵심 절(part_meta/model_meta/base_part/change_point/change_reason/stage)만 검증.
+"""
 
 from __future__ import annotations
 
@@ -23,28 +27,29 @@ def _full_core() -> dict:
 
 
 def test_narrativize_full_case():
-    payload = {
-        "DRBFM > DRBFM 코멘트": "고온 영역 확장",
-        "친환경 > HSMS 영향": "재인증 필요",
-        "금형 > 금형 종류": "사출 신규",
-        "시험 > 부품인정시험 항목": "내열, 내구",
-        "부품 > 공급사": "세우산업",
-    }
-    text = narrativize(_full_core(), payload)
-    # 핵심 키워드 포함
-    for token in ("AGG74419321", "Packing", "WSED7667M", "EUR", "Best-1", "Change",
-                  "AGG74419320", "DRBFM", "HSMS", "세우산업", "DV"):
+    """핵심 절 모두 포함된 narrative."""
+    text = narrativize(_full_core(), payload={})
+    for token in (
+        "AGG74419321",
+        "Packing",
+        "WSED7667M",
+        "EUR",
+        "Best-1",
+        "Change",
+        "AGG74419320",
+        "DV",
+    ):
         assert token in text, f"missing token: {token}"
 
 
-def test_narrativize_no_optional_clauses():
-    """payload 비어있고 옵션 절 트리거 없을 때 — 빈 칸 없이 본문만."""
-    text = narrativize(_full_core(), payload={})
+def test_narrativize_no_drbfm_or_hsms():
+    """D-011: payload trigger 절(DRBFM/HSMS/금형/시험/공급사/비표준) 모두 없음."""
+    text = narrativize(_full_core(), payload={"DRBFM > 코멘트": "고온"})
+    # payload는 더 이상 narrative에 영향 X
     assert "DRBFM" not in text
     assert "HSMS" not in text
     assert "공급사" not in text
-    # but main 사실은 남아있음
-    assert "AGG74419321" in text
+    assert "금형" not in text
 
 
 def test_narrativize_missing_optional_core_fields():

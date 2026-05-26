@@ -1,7 +1,11 @@
-# v2.0 Step 5 — 결정론적 narrativize 템플릿 (preprocessing_v2.md §5).
+# v2.0 Step 5 — narrativize 템플릿 (D-011 Phase F 단순화 후).
 #
-# core + payload → 자연어 200~600 토큰. LLM 호출 0회. Jinja2 스타일 변수 치환.
-# 조건부 절(clauses)은 값이 있을 때만 추가돼 빈 칸 없이 자연스럽게.
+# core → 자연어 4~6문장. LLM 호출 0회.
+#
+# D-011 변경:
+#   - 6개 조건부 절(drbfm/hsms/mold/test/supplier/nonstd) 모두 제거
+#   - payload_triggers 섹션 전체 제거
+#   - 핵심 절(part_meta/model_meta/base_part/change_point/change_reason/stage)만 유지
 
 change_event_template: |
   변경부품 {part_no}({part_name}{part_meta_clause}).
@@ -9,7 +13,7 @@ change_event_template: |
   {change_type_phrase}{base_part_clause}
   {change_point_clause}
   {change_reason_clause}
-  {drbfm_clause}{hsms_clause}{mold_clause}{test_clause}{supplier_clause}{nonstd_clause}{stage_clause}
+  {stage_clause}
 
 # 조건부 절 — 값 있을 때만 채워서 본문에 삽입.
 clauses:
@@ -18,12 +22,6 @@ clauses:
   base_part_clause: " 기존 {base_part_no}에서 변경됨."
   change_point_clause: "변경점: {change_point}"
   change_reason_clause: "변경 사유: {change_reason}"
-  drbfm_clause: "DRBFM 코멘트: {drbfm_note}. "
-  hsms_clause: "재질/표면처리 변경으로 HSMS 재인증 필요. "
-  mold_clause: "사출 부품으로 금형 {mold_type} 개발 일정 검토. "
-  test_clause: "부품인정시험 {test_items} 실시 계획. "
-  supplier_clause: "공급사 {supplier} 협력. "
-  nonstd_clause: "비표준 부품. 사유: {nonstd_reason}. "
   stage_clause: "현 개발 단계: {event_stage_korean}."
 
 # 매핑 사전
@@ -40,26 +38,3 @@ event_stage_korean:
   PQ: "양산 품질 검증 단계 (PQ)"
   MP: "양산 (MP)"
   PreMP: "양산 직전 (PreMP)"
-
-# Payload 트리거 — 어떤 키가 있으면 어떤 절을 활성화할지
-payload_triggers:
-  drbfm_clause:
-    keys: ["DRBFM > DRBFM 코멘트", "DRBFM > 코멘트", "DRBFM"]
-    var: drbfm_note
-  hsms_clause:
-    keys: ["친환경 > HSMS 영향", "HSMS"]
-    value_contains: ["재인증", "필요"]
-  mold_clause:
-    keys: ["금형 > 금형 종류", "금형"]
-    var: mold_type
-  test_clause:
-    keys: ["시험 > 부품인정시험 항목", "시험 > 시험 항목", "Test Items"]
-    var: test_items
-  supplier_clause:
-    keys: ["부품 > 공급사", "공급사", "Supplier"]
-    var: supplier
-  nonstd_clause:
-    keys: ["부품 > 표준/비표준", "표준/비표준"]
-    value_contains: ["비표준"]
-    var: nonstd_reason
-    var_keys: ["부품 > 비표준 사유", "비표준 사유"]
