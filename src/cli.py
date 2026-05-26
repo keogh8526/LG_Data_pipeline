@@ -308,39 +308,47 @@ def db_verify(run_id: str = typer.Option(..., "--run-id")) -> None:
     typer.echo(f"{run_id}: {counts}")
 
 
-# --- search -------------------------------------------------------------
+# --- agent-search (BOM Agent retrieve 데모용 — D-011 후) ----------------
 
 
-@app.command()
-def search(
-    query: str = typer.Argument(..., help="자유텍스트 쿼리."),
-    top_k: int = typer.Option(5, "--top-k"),
-    form_version: str = typer.Option("", "--form-version", help="VersionRAG 필터."),
+@app.command("agent-search")
+def agent_search(
+    pno: str = typer.Option("", "--pno", help="부품번호 정확 매치 (part_no/base_part_no)."),
+    part_name: str = typer.Option("", "--part-name", help="부품명 ILIKE 매치."),
+    change_reason: str = typer.Option("", "--reason", help="변경사유 ILIKE 매치."),
+    top_k: int = typer.Option(30, "--top-k"),
 ) -> None:
-    """v2.0 §7 — Query Router + Hybrid + RRF + Rerank + Graph 검색."""
-    from src.search.pipeline import search as do_search
+    """BOM Agent retrieve 노드가 호출할 단순 검색 데모.
+
+    이전 v2.0 7-case Query Router + RRF + Rerank + Graph는 D-011 Phase D로
+    제거. 본 명령은 ``src/db/search_simple.py:search_change_events``의 thin wrapper.
+    """
+    from src.db.search_simple import search_change_events
+
+    if not any([pno, part_name, change_reason]):
+        typer.echo("적어도 하나의 옵션(--pno / --part-name / --reason)을 지정하세요.")
+        raise typer.Exit(code=1)
 
     engine = make_engine()
     Session = session_factory(engine)
     with Session() as session:
-        hits = do_search(
+        hits = search_change_events(
             session,
-            query,
+            pno=pno or None,
+            part_name_keyword=part_name or None,
+            change_reason_keyword=change_reason or None,
             top_k=top_k,
-            form_version=form_version or None,
         )
     if not hits:
         typer.echo("(no hits)")
         return
     for h in hits:
         typer.echo(
-            f"  [{h.score:.3f}] event_id={h.event_id} ({h.form_version}) "
-            f"part={h.part_no} model={h.new_model_code}"
+            f"  event_id={str(h.event_id)[:8]}... ({h.form_version}) "
+            f"part={h.part_no} model={h.new_model_code} grade={h.grade}"
         )
         if h.narrative_text:
             typer.echo(f"     {h.narrative_text[:160]}...")
-        if h.graph_neighbors:
-            typer.echo(f"     +{len(h.graph_neighbors)} neighbors")
 
 
 if __name__ == "__main__":
