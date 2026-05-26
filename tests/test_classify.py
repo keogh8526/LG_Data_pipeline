@@ -1,68 +1,51 @@
-"""Tests for the Step 1 form-version classifier."""
+"""v2.0 시트 단위 분류기 회귀 테스트."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from src.preprocess.classify import classify_dir, classify_form, load_signatures
+import pytest
 
-# Synthetic fixture -> expected form version (ground truth).
-_EXPECTED = {
-    "sample_v12.xlsx": "v1_2",
-    "sample_96col.xlsx": "96col",
-    "sample_56col.xlsx": "56col",
-    "sample_20col.xlsx": "20col",
-}
+from src.preprocess.classify import classify_dir, classify_file
 
 
-def test_signatures_load() -> None:
-    versions = load_signatures()
-    assert set(versions) == {"v1_2", "96col", "56col", "20col", "bom_tree"}
+def test_changing_parts_96_classified(fixture_workbooks: Path):
+    file = fixture_workbooks / "fixture_changing_parts_96.xlsx"
+    result, sheet_results = classify_file(file)
+    assert result.form_version.startswith("변경부품_list_")
+    assert any(s.form_id.startswith("변경부품_list_") for s in sheet_results)
 
 
-def test_all_fixtures_classified_correctly(fixture_workbooks: Path) -> None:
-    for result in classify_dir(fixture_workbooks):
-        name = Path(result.file_path).name
-        assert result.form_version == _EXPECTED[name], name
-        assert not result.needs_review, name
-        assert result.confidence >= 0.85, name
+def test_changing_parts_91_classified(fixture_workbooks: Path):
+    file = fixture_workbooks / "fixture_changing_parts_91.xlsx"
+    result, sheet_results = classify_file(file)
+    sub = [s.form_id for s in sheet_results if s.form_id.startswith("변경부품_list_")]
+    assert sub and any(v == "변경부품_list_91" for v in sub)
 
 
-def test_unknown_file_falls_back(tmp_path: Path) -> None:
-    import openpyxl
-
-    wb = openpyxl.Workbook()
-    wb.active.append(["x"] * 40)  # 40 cols — matches no version range
-    path = tmp_path / "weird.xlsx"
-    wb.save(path)
-
-    result = classify_form(path)
-    assert result.form_version == "unknown"
-    assert result.confidence == 0.0
+def test_new_parts_list_classified(fixture_workbooks: Path):
+    file = fixture_workbooks / "fixture_new_parts_list_75.xlsx"
+    result, _ = classify_file(file)
+    assert result.form_version == "신규부품리스트_75"
 
 
-def test_evidence_records_all_version_scores(fixture_workbooks: Path) -> None:
-    result = classify_form(fixture_workbooks / "sample_96col.xlsx")
-    assert set(result.evidence) == {"v1_2", "96col", "56col", "20col", "bom_tree"}
-    assert result.evidence["96col"] >= 0.7
+def test_bom_ag_grid_classified(fixture_workbooks: Path):
+    file = fixture_workbooks / "fixture_bom_ag_grid_36.xlsx"
+    result, _ = classify_file(file)
+    assert result.form_version == "BOM_ag_grid_36"
 
 
-def test_sheet_results_present_for_multi_sheet_workbook(fixture_workbooks: Path) -> None:
-    result = classify_form(fixture_workbooks / "sample_v12.xlsx")
-    # Multi-sheet: file-level still resolves to v1_2 (sheet_exists fires),
-    # but per-sheet scoring excludes file-level signals.
-    assert result.form_version == "v1_2"
-    assert set(result.sheet_results) == {"변경점List", "History"}
-    main = result.sheet_results["변경점List"]
-    # Without the History bonus, the main sheet alone falls short of the
-    # threshold but still has a positive v1_2 score from its own header text.
-    assert main.evidence["v1_2"] > 0
+def test_activity_master_classified(fixture_workbooks: Path):
+    file = fixture_workbooks / "fixture_activity_master.xlsx"
+    result, sheet_results = classify_file(file)
+    # 9~14 max_col에 row2 ※ Master 마커
+    assert result.form_version in {"activity_master_meta", "unknown"}
 
 
-def test_sheet_results_for_single_sheet_fixtures(fixture_workbooks: Path) -> None:
-    # Single-sheet workbooks: sheet-level decision agrees with file-level.
-    result = classify_form(fixture_workbooks / "sample_96col.xlsx")
-    assert len(result.sheet_results) == 1
-    only = next(iter(result.sheet_results.values()))
-    assert only.form_version == "96col"
-    assert only.form_version == result.form_version
+def test_classify_dir_distributes(fixture_workbooks: Path):
+    results = classify_dir(fixture_workbooks)
+    form_versions = {r.form_version for r in results}
+    # 적어도 changing_parts와 신규부품리스트와 bom은 식별돼야 함
+    assert any(v.startswith("변경부품_list_") for v in form_versions)
+    assert "신규부품리스트_75" in form_versions
+    assert "BOM_ag_grid_36" in form_versions

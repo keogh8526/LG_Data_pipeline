@@ -1,122 +1,282 @@
-"""Step 2 — answer schema (96col-based).
+"""v2.0 Step 2 — Core 13필드 + JSONB Payload + Multi-Vector 스키마.
 
-The 96col form is the *de facto* answer schema for the MVP: it is the form
-currently in operation, so it has the most real filled-in data. The v1.2 form
-is treated as a future superset, not the current truth (see DECISIONS D-007).
-
-``ChangeEventRow`` is the top-level entity — one row of a normalized 96col
-master. Axiom enforcement is wired through field validators in
-``src.ontology.axioms``.
+preprocessing_v2.md §4-2 그대로 구현. "Schema-on-Discovery" 원칙:
+- Core 13필드만 타입 강제 (양식 공통)
+- 나머지 양식 원본은 payload(JSONB)로 100% 보존
+- 자유텍스트는 semantic_text에 raw로 저장 → narrativize/embed에서 사용
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
+from enum import Enum
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.ontology import axioms
 from src.utils.paths import SCHEMA_JSON_PATH
 
 
-# --- 96col group sub-models ----------------------------------------------
+# --- Enums ----------------------------------------------------------------
 
 
-class CommonFields(BaseModel):
-    """공통 그룹 — 모델/개발 메타데이터."""
+class Grade(str, Enum):
+    """부품 등급 (axioms.yaml grade.allowed와 일치)."""
 
-    base_model: str | None = None
-    new_model: str | None = None
-    grade: str | None = None
-    buyer: str | None = None
-    production_date: str | None = None
-
-
-class DRBFMFields(BaseModel):
-    """DRBFM 그룹 — 변경점 우려 분석."""
-
-    concern: str | None = None
-    countermeasure: str | None = None
-
-
-class PartCertFields(BaseModel):
-    """부품 인증/등급 그룹."""
-
-    grade_decision: str | None = None
-    dev_status: str | None = None
+    BEST_1 = "Best-1"
+    BEST_2 = "Best-2"
+    BETTER_1 = "Better-1"
+    BETTER_2 = "Better-2"
+    GOOD_1 = "Good-1"
+    GOOD_2 = "Good-2"
+    GOOD_1_BK = "Good-1 BK"
+    GOOD_2_BK = "Good-2 BK"
+    GOOD_1_STS = "Good-1 STS"
+    GOOD_2_STS = "Good-2 STS"
+    UNKNOWN = "unknown"
 
 
-class HSMSFields(BaseModel):
-    """HSMS 그룹 — 유해물질 관리."""
+class Region(str, Enum):
+    """지역 코드 (axioms.yaml region.allowed와 일치)."""
 
-    hazard_status: str | None = None
+    EUR = "EUR"
+    EUE = "EUE"
+    EAP = "EAP"
+    SJ = "SJ"
+    SA = "SA"
+    AU = "AU"
+    SG = "SG"
+    KR = "KR"
+    US = "US"
+    UNKNOWN = "unknown"
 
 
-class MoldFields(BaseModel):
-    """금형/사출 그룹."""
+class ChangeType(str, Enum):
+    """변경 유형."""
 
-    mold_no: str | None = None
-    cavity: int | None = None
-
-
-# --- Top-level entity -----------------------------------------------------
+    NEW = "New"
+    CHANGE = "Change"
+    CARRY_OVER = "Carry-over"
 
 
-class ChangeEventRow(BaseModel):
-    """한 행의 정규화된 96col 마스터 — 부품 변경 이벤트."""
+class EventStage(str, Enum):
+    """현 개발 단계."""
 
-    # Fixed features (10).
-    base_part_no: str
-    new_part_no: str | None = None
-    part_name: str
-    bom_level: int = Field(ge=0, le=10)
-    part_type: str
-    change_type: str
-    change_point: str
-    change_reason: str | None = None
-    qty: float | None = None
-    model_code: str
+    CP = "CP"
+    PP = "PP"
+    DV = "DV"
+    PV = "PV"
+    PQ = "PQ"
+    MP = "MP"
+    PRE_MP = "PreMP"
 
-    # 96col groups.
-    common: CommonFields = Field(default_factory=CommonFields)
-    drbfm: DRBFMFields = Field(default_factory=DRBFMFields)
-    part_cert: PartCertFields = Field(default_factory=PartCertFields)
-    hsms: HSMSFields = Field(default_factory=HSMSFields)
-    mold: MoldFields = Field(default_factory=MoldFields)
 
-    # Provenance / batch metadata.
-    source_file: str
-    form_version: str
-    extracted_at: datetime | None = None
-    run_id: str
+class PartType(str, Enum):
+    """부품 유형."""
 
-    @field_validator("base_part_no", "new_part_no", mode="before")
+    INJECTION = "사출"
+    ASSY = "Assy"
+    ELECTRONIC = "전장"
+    SINGLE = "단품"
+    OTHER = "기타"
+
+
+# --- Core 13필드 ---------------------------------------------------------
+
+
+class CoreFields(BaseModel):
+    """모든 양식 공통 추출 대상. preprocessing_v2.md §4-1.
+
+    13개 필드 = 명시적 필수 10개 + 옵셔널이지만 자주 등장 3개(base_part_no,
+    bom_level, part_type, region까지 사실상 14개지만 문서 관례상 "Core 13").
+    """
+
+    model_config = ConfigDict(use_enum_values=True, validate_assignment=False)
+
+    # 명시적 필수
+    part_no: str = Field(..., max_length=15, description="새 부품번호 (변경 후)")
+    part_name: str = Field(..., description="부품명/품명/형상명")
+    new_model_code: str = Field(..., max_length=50, description="새 모델 코드")
+    grade: Grade | str = Field(..., description="부품 등급")
+    change_type: ChangeType | str = Field(..., description="변경 유형")
+
+    # 옵셔널 but 자주 등장
+    base_part_no: Optional[str] = Field(None, max_length=15)
+    base_model_code: Optional[str] = Field(None, max_length=50)
+    region: Optional[Region | str] = None
+    event_stage: Optional[EventStage | str] = None
+    change_point: Optional[str] = None
+    change_reason: Optional[str] = None
+    bom_level: Optional[int] = Field(None, ge=0, le=10)
+    part_type: Optional[PartType | str] = None
+
+    @field_validator("part_no", "base_part_no", mode="before")
     @classmethod
     def _normalize_part_no(cls, value: object) -> object:
-        # Normalize only — invalid part numbers are recorded as data errors
-        # downstream (quarantine), never raised here.
-        if isinstance(value, str) and value.strip():
-            return axioms.normalize_part_no(value)
-        return value
+        # 정규화만; axiom 위반은 quarantine 단계에서 거름 (raise 금지).
+        if value is None:
+            return None
+        s = str(value).strip()
+        if not s:
+            return None
+        return axioms.normalize_part_no(s)
 
     @field_validator("change_type", mode="before")
     @classmethod
-    def _normalize_change_type(cls, value: object) -> str:
+    def _normalize_change_type(cls, value: object) -> object:
+        if value is None:
+            return value
         canonical = axioms.normalize_change_type(str(value))
         if canonical is None:
             raise ValueError(f"unknown change_type: {value!r}")
         return canonical
 
+    @field_validator("grade", mode="before")
+    @classmethod
+    def _normalize_grade(cls, value: object) -> object:
+        if value is None or str(value).strip() == "":
+            return Grade.UNKNOWN.value
+        canonical = axioms.normalize_grade(str(value))
+        return canonical or Grade.UNKNOWN.value
 
-def export_schema_json(path: object = SCHEMA_JSON_PATH) -> None:
-    """Export the JSON Schema for :class:`ChangeEventRow`.
+    @field_validator("region", mode="before")
+    @classmethod
+    def _normalize_region(cls, value: object) -> object:
+        if value is None or str(value).strip() == "":
+            return None
+        upper = str(value).strip().upper()
+        if upper in {r.value for r in Region}:
+            return upper
+        return Region.UNKNOWN.value
+
+    @field_validator("part_type", mode="before")
+    @classmethod
+    def _normalize_part_type(cls, value: object) -> object:
+        if value is None or str(value).strip() == "":
+            return None
+        return axioms.normalize_part_type(str(value)) or PartType.OTHER.value
+
+
+# --- ChangeEvent (한 행 = 한 이벤트) -------------------------------------
+
+
+class ChangeEvent(BaseModel):
+    """한 행 = 하나의 ChangeEvent. Core + Payload + Narrative.
+
+    preprocessing_v2.md §4-2.
+
+    - core: Core 13필드 (타입 강제, PG 컬럼)
+    - payload: 양식 원본 컬럼 전부 (JSONB) — "검색에 안 써도 답변 컨텍스트로"
+    - semantic_text: 자유텍스트 raw (narrativize/embed 소스)
+    - narrative_text: Step 5 narrativize 결과 (200~600 토큰)
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    core: CoreFields
+    payload: dict[str, Any] = Field(default_factory=dict)
+    semantic_text: dict[str, str] = Field(default_factory=dict)
+    narrative_text: Optional[str] = None
+
+    # Provenance
+    form_version: str = Field(..., description="예: 변경부품_list_96, BOM_ag_grid_36")
+    source_file: str
+    source_sheet: str
+    source_row: int
+
+    # Run / ER 메타
+    run_id: str
+    confidence: float = 1.0
+    needs_review: bool = False
+    extracted_at: Optional[datetime] = None
+
+
+# --- Part / Model / BOMEdge ---------------------------------------------
+
+
+class Part(BaseModel):
+    """부품 마스터 한 행."""
+
+    part_no: str = Field(..., max_length=15)
+    part_name: str
+    description: Optional[str] = None
+    technical_spec: Optional[str] = None
+    bom_level: Optional[int] = Field(None, ge=0, le=10)
+    part_type: Optional[str] = None
+    maker: Optional[str] = None
+    standard: Optional[str] = None
+    uom: Optional[str] = None
+    aliases: list[str] = Field(default_factory=list)
+    run_id: Optional[str] = None
+
+
+class Model(BaseModel):
+    """모델 메타."""
+
+    model_code: str = Field(..., max_length=50)
+    model_name: Optional[str] = Field(None, max_length=30)
+    grade: Optional[str] = None
+    region: Optional[str] = None
+    buyer_code: Optional[str] = None
+    production_date: Optional[str] = None
+    size_inch: Optional[int] = None
+    brand: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+class BOMEdge(BaseModel):
+    """BOM 부모-자식 관계 한 행."""
+
+    model_code: str
+    parent_part_no: str
+    child_part_no: str
+    qty: Optional[float] = None
+    bom_level: Optional[int] = None
+    change_in: Optional[str] = None
+    change_out: Optional[str] = None
+    run_id: str
+
+
+# --- JSON Schema export -------------------------------------------------
+
+
+def export_schema_json(path: Optional[object] = None) -> None:
+    """ChangeEvent + 보조 모델의 JSON Schema(Draft 2020-12) export.
 
     Args:
-        path: Output path for ``schema.json``.
+        path: 출력 파일 경로. None이면 ``SCHEMA_JSON_PATH`` 사용.
     """
-    schema = ChangeEventRow.model_json_schema()
-    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    path.write_text(  # type: ignore[attr-defined]
-        json.dumps(schema, indent=2, ensure_ascii=False), encoding="utf-8"
+    out_path = path if path is not None else SCHEMA_JSON_PATH
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://lg-bom/v2.0/schema.json",
+        "title": "LG BOM v2.0 ontology",
+        "definitions": {
+            "CoreFields": CoreFields.model_json_schema(),
+            "ChangeEvent": ChangeEvent.model_json_schema(),
+            "Part": Part.model_json_schema(),
+            "Model": Model.model_json_schema(),
+            "BOMEdge": BOMEdge.model_json_schema(),
+        },
+    }
+    out_path.write_text(  # type: ignore[attr-defined]
+        json.dumps(schema, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
+
+
+__all__ = [
+    "BOMEdge",
+    "ChangeEvent",
+    "ChangeType",
+    "CoreFields",
+    "EventStage",
+    "Grade",
+    "Model",
+    "Part",
+    "PartType",
+    "Region",
+    "export_schema_json",
+]

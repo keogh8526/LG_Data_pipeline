@@ -1,9 +1,12 @@
-"""Step 3 — deterministic value normalization (config-driven).
+"""v2.0 Step 3 — 결정론적 값 정규화 (preprocessing_v2.md §3 Step 3).
 
-Each field declares a sequence of steps in ``config/normalization.yaml``. Steps
-are pure functions over a single value; ``post_validate`` references an axiom
-key (e.g. ``part_no``). Null-like inputs (None, NaN, "", " ", "N/A") short-circuit
-to None and never raise.
+원칙:
+  - 모든 텍스트에 NFC 1차 적용 (macOS 자모분리 복원)
+  - 식별자 필드(part_no, model_code, buyer, grade)에 NFKC (전각/반각 통일)
+  - 자유텍스트(change_point, change_reason)에 NFC만 (의미 보존)
+
+각 필드는 ``config/normalization.yaml``의 step 시퀀스를 따라 처리. 실패 시
+``on_fail`` 정책 적용. null-like 입력은 short-circuit으로 None 반환.
 """
 
 from __future__ import annotations
@@ -13,37 +16,24 @@ import re
 import unicodedata
 from dataclasses import dataclass, field as dc_field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import yaml
 
 from src.ontology import axioms
-from src.utils.audit import AuditTrail
+from src.utils.logging import get_logger
 from src.utils.paths import NORMALIZATION_PATH
 
-# Strings (case-insensitive, trimmed) that mean "no value".
-_NULL_TOKENS = frozenset({"", "n/a", "na", "null", "none", "-", "—"})
+log = get_logger(__name__)
 
-# Maps a 96col schema field name to its normalization rule key.
-FIELD_TO_RULE: dict[str, str] = {
-    "base_part_no": "part_no",
-    "new_part_no": "part_no",
-    "model_code": "model_code",
-    "bom_level": "bom_level",
-    "change_type": "change_type",
-    "grade": "grade",
-    "change_point": "change_point",
-    "change_reason": "change_reason",
-    "part_name": "part_name",
-    "part_type": "part_type",
-    "qty": "qty",
-}
+# Strings (case-insensitive, trimmed) that mean "no value".
+_NULL_TOKENS = frozenset({"", "n/a", "na", "null", "none", "-", "—", "nan"})
 
 
 @dataclass
 class NormalizationResult:
-    """Outcome of normalizing a single value."""
+    """단일 값 정규화 결과."""
 
     value: Any
     applied_steps: list[str] = dc_field(default_factory=list)
@@ -53,19 +43,18 @@ class NormalizationResult:
 
 @dataclass
 class NormalizeReport:
-    """Per-run summary of normalization failures + the audit trail."""
+    """run/file 단위 요약."""
 
-    rows: int
+    rows: int = 0
     failures: list[dict[str, Any]] = dc_field(default_factory=list)
-    audit: AuditTrail | None = None
 
 
-def is_null(value: Any) -> bool:
-    """Return True if ``value`` represents a missing entry.
+@lru_cache(maxsize=1)
+def _rules(path: Path = NORMALIZATION_PATH) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    Args:
-        value: Any raw value (None, NaN, str, number).
-    """
+
+def _is_null_like(value: object) -> bool:
     if value is None:
         return True
     if isinstance(value, float) and math.isnan(value):
@@ -75,55 +64,30 @@ def is_null(value: Any) -> bool:
     return False
 
 
-@lru_cache(maxsize=1)
-def load_normalization_config() -> dict[str, Any]:
-    """Load and cache ``config/normalization.yaml``.
-
-    Returns:
-        The parsed config dict.
-    """
-    return yaml.safe_load(NORMALIZATION_PATH.read_text(encoding="utf-8"))
-
-
-def _coerce_step(step: object) -> dict[str, Any]:
-    """Normalize a YAML step to a dict form."""
-    return {"type": step} if isinstance(step, str) else dict(step)  # type: ignore[arg-type]
-
-
 def _apply_step(value: Any, step: dict[str, Any]) -> Any:
-    """Apply one normalization step to a single non-null value.
-
-    Args:
-        value: The current (non-null) value.
-        step: The step config dict.
-
-    Returns:
-        The transformed value.
-
-    Raises:
-        ValueError: When the step fails (e.g. cast on a non-numeric string).
-    """
-    step_type = step["type"]
-    if step_type == "strip":
-        return str(value).strip()
-    if step_type == "upper":
-        return str(value).upper()
-    if step_type == "lower":
-        return str(value).lower()
-    if step_type == "unicode_normalize":
-        return unicodedata.normalize(step.get("form", "NFKC"), str(value))
-    if step_type == "collapse_whitespace":
-        return re.sub(r"\s+", " ", str(value))
-    if step_type == "regex_remove":
-        return re.sub(str(step["pattern"]), "", str(value))
-    if step_type == "max_length":
-        limit = int(step["value"])
-        s = str(value)
-        if len(s) <= limit:
-            return s
-        # Length policy: truncation is applied by the on_fail branch.
-        raise ValueError(f"length {len(s)} > {limit}")
-    if step_type == "cast":
+    t = step["type"]
+    if t == "null_token_to_none":
+        return None if _is_null_like(value) else value
+    if value is None:
+        return None
+    if t == "unicode_normalize":
+        return unicodedata.normalize(step["form"], str(value))
+    if t == "strip":
+        return str(value).strip() if isinstance(value, str) else value
+    if t == "upper":
+        return str(value).upper() if isinstance(value, str) else value
+    if t == "lower":
+        return str(value).lower() if isinstance(value, str) else value
+    if t == "collapse_whitespace":
+        return re.sub(r"\s+", " ", str(value)) if isinstance(value, str) else value
+    if t == "regex_remove":
+        return re.sub(step["pattern"], "", str(value)) if isinstance(value, str) else value
+    if t == "max_length":
+        n = int(step["value"])
+        if isinstance(value, str) and len(value) > n:
+            raise ValueError(f"max_length {n} exceeded")
+        return value
+    if t == "cast":
         target = step["to"]
         if target == "int":
             return int(float(value))
@@ -131,90 +95,64 @@ def _apply_step(value: Any, step: dict[str, Any]) -> Any:
             return float(value)
         if target == "str":
             return str(value)
-        raise ValueError(f"unsupported cast target: {target}")
-    if step_type == "range_check":
+    if t == "range_check":
+        mn = step.get("min")
+        mx = step.get("max")
         v = float(value)
-        low = float(step["min"])
-        high = float(step["max"])
-        if low <= v <= high:
-            return value
-        raise ValueError(f"value {v} outside [{low}, {high}]")
-    if step_type == "map_alias":
-        canonical: str | None
-        if step["field"] == "change_type":
+        if (mn is not None and v < mn) or (mx is not None and v > mx):
+            raise ValueError(f"out of range [{mn}, {mx}]: {v}")
+        return value
+    if t == "map_alias":
+        field = step["field"]
+        if field == "change_type":
             canonical = axioms.normalize_change_type(str(value))
-        elif step["field"] == "grade":
+        elif field == "grade":
             canonical = axioms.normalize_grade(str(value))
+        elif field == "part_type":
+            canonical = axioms.normalize_part_type(str(value))
         else:
-            raise ValueError(f"no alias map for field: {step['field']}")
+            canonical = value
         if canonical is None:
-            raise ValueError(f"unknown alias: {value!r}")
+            raise ValueError(f"alias not found for {field}: {value!r}")
         return canonical
-    raise ValueError(f"unknown step type: {step_type}")
+    return value
 
 
-def _apply_fail_policy(
-    policy: str, value: Any, step: dict[str, Any]
-) -> tuple[Any, bool]:
-    """Apply an on_fail policy and return (recovered_value, recovered).
-
-    Args:
-        policy: ``quarantine``, ``truncate``, or ``set_null``.
-        value: The value at the point of failure.
-        step: The failing step config.
-
-    Returns:
-        ``(value, True)`` on successful recovery; ``(value, False)`` if the
-        caller should treat the row as failed.
-    """
-    if policy == "set_null":
-        return None, True
-    if policy == "truncate":
-        if step["type"] == "max_length":
-            return str(value)[: int(step["value"])], True
-        if step["type"] == "range_check":
-            v = float(value)
-            low = float(step["min"])
-            high = float(step["max"])
-            return max(low, min(high, v)), True
-    return value, False
+_VALIDATORS = {
+    "part_no": axioms.validate_part_no,
+    "model_code": axioms.validate_model_code,
+    "change_type": axioms.validate_change_type,
+    "grade": axioms.validate_grade,
+    "event_stage": axioms.validate_event_stage,
+    "region": axioms.validate_region,
+}
 
 
-def normalize_field(
-    value: Any, field_name: str, config: dict[str, Any] | None = None
-) -> NormalizationResult:
-    """Normalize one value against the rule for ``field_name``.
-
-    Args:
-        value: Raw input value.
-        field_name: 96col schema field name (e.g. ``base_part_no``).
-        config: Optional pre-loaded normalization config.
-
-    Returns:
-        A :class:`NormalizationResult`.
-    """
-    if is_null(value):
-        return NormalizationResult(value=None)
-
-    cfg = config if config is not None else load_normalization_config()
-    rule_key = FIELD_TO_RULE.get(field_name, field_name)
-    rules: dict[str, Any] | None = cfg["fields"].get(rule_key)
-    if rules is None:
+def normalize_value(value: Any, field_name: str) -> NormalizationResult:
+    """필드 1개 값 정규화. on_fail 정책 따라 결과 처리."""
+    rules = _rules()
+    rule = rules.get("fields", {}).get(field_name)
+    if rule is None:
         return NormalizationResult(value=value)
 
-    on_fail = rules.get("on_fail", "quarantine")
     applied: list[str] = []
     current = value
-    for raw_step in rules.get("steps", []):
-        step = _coerce_step(raw_step)
+    for step in rule.get("steps", []):
         try:
             current = _apply_step(current, step)
             applied.append(step["type"])
-        except (ValueError, TypeError) as exc:
-            recovered, ok = _apply_fail_policy(on_fail, current, step)
-            if ok:
-                current = recovered
-                applied.append(f"{step['type']}({on_fail})")
+        except Exception as exc:  # noqa: BLE001 — 데이터 오류는 캡처
+            on_fail = rule.get("on_fail", "quarantine")
+            if on_fail == "set_null":
+                return NormalizationResult(
+                    value=None,
+                    applied_steps=applied,
+                    success=True,
+                    fail_reason=f"{step['type']}: {exc}",
+                )
+            if on_fail == "truncate" and step["type"] == "max_length":
+                current = str(current)[: int(step["value"])]
+                applied.append("max_length(truncated)")
                 continue
             return NormalizationResult(
                 value=current,
@@ -223,72 +161,53 @@ def normalize_field(
                 fail_reason=f"{step['type']}: {exc}",
             )
 
-    post = rules.get("post_validate")
-    if post:
-        validator = getattr(axioms, f"validate_{post}", None)
-        if validator is not None and not validator(current):
+    # post_validate
+    pv = rule.get("post_validate")
+    if pv and current is not None:
+        validator = _VALIDATORS.get(pv)
+        if validator and not validator(current):
+            on_fail = rule.get("on_fail", "quarantine")
+            if on_fail == "set_null":
+                return NormalizationResult(
+                    value=None,
+                    applied_steps=applied,
+                    success=True,
+                    fail_reason=f"post_validate {pv} failed",
+                )
             return NormalizationResult(
                 value=current,
                 applied_steps=applied,
                 success=False,
-                fail_reason=f"post_validate({post}) failed",
+                fail_reason=f"post_validate {pv} failed for {current!r}",
             )
 
     return NormalizationResult(value=current, applied_steps=applied)
 
 
-def normalize_dataframe(
-    df: pd.DataFrame, run_id: str
-) -> tuple[pd.DataFrame, NormalizeReport]:
-    """Normalize every recognized column of ``df``.
-
-    Args:
-        df: Mapped DataFrame (96col-shaped).
-        run_id: Run identifier for the failure report.
+def normalize_core(core: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Core dict 전체 정규화.
 
     Returns:
-        ``(normalized_df, report)``. Failure reasons are appended to a
-        ``_quarantine_reason`` column on the DataFrame.
+        (정규화된 core dict, {field: fail_reason} for 실패한 필드).
     """
-    cfg = load_normalization_config()
-    out = df.copy()
-    audit = AuditTrail(run_id=run_id)
-    report = NormalizeReport(rows=len(out), audit=audit)
-    existing_reasons = (
-        out["_quarantine_reason"].fillna("").tolist()
-        if "_quarantine_reason" in out.columns
-        else [""] * len(out)
-    )
+    out: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    for k, v in core.items():
+        res = normalize_value(v, k)
+        out[k] = res.value
+        if not res.success and res.fail_reason:
+            failures[k] = res.fail_reason
+    return out, failures
 
-    for column in [c for c in out.columns if c in FIELD_TO_RULE]:
-        new_values: list[Any] = []
-        for idx, value in enumerate(out[column].tolist()):
-            result = normalize_field(value, column, cfg)
-            new_values.append(result.value)
-            # Record every transformation, even passes, so the trail is complete.
-            if result.applied_steps:
-                audit.record(
-                    stage="normalize",
-                    field_name=column,
-                    before=value,
-                    after=result.value,
-                    note=",".join(result.applied_steps),
-                )
-            if not result.success:
-                reason = f"{column}: {result.fail_reason}"
-                existing_reasons[idx] = (
-                    f"{existing_reasons[idx]};{reason}" if existing_reasons[idx] else reason
-                )
-                report.failures.append(
-                    {
-                        "run_id": run_id,
-                        "row": idx,
-                        "field": column,
-                        "raw": value,
-                        "reason": result.fail_reason,
-                    }
-                )
-        out[column] = new_values
 
-    out["_quarantine_reason"] = [r if r else None for r in existing_reasons]
-    return out, report
+def normalize_semantic(semantic: dict[str, str]) -> dict[str, str]:
+    """자유텍스트 dict: NFC + strip + collapse_whitespace만 적용."""
+    out: dict[str, str] = {}
+    for k, v in semantic.items():
+        if v is None:
+            continue
+        nfc = unicodedata.normalize("NFC", str(v))
+        cleaned = re.sub(r"\s+", " ", nfc.strip())
+        if cleaned:
+            out[k] = cleaned
+    return out

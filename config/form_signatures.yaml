@@ -1,78 +1,131 @@
-# Step 1 — form-version classification signatures.
+# v2.0 Step 1 — 시트 단위 양식 분류 시그니처.
 #
-# Each version lists weighted signals. A file's score for a version is the sum
-# of matched signal weights; if the top score >= its threshold the file is
-# classified as that version. Otherwise it falls back to "unknown".
-#
-# Signal types (all deterministic — no LLM):
-#   sheet_exists          name        : a sheet with this exact name exists
-#   sheet_name_contains   keywords[]  : any sheet name contains any keyword
-#   col_count_range       range[2]    : max column count across sheets in range
-#   header_text_contains  keywords[]  : any top-left cell text contains a keyword
-#   marker_cell           value       : a top-left cell equals this value
-#   stage_row             markers[]   : >=4 of these markers appear together
-#
-# These signatures are tuned against synthetic fixtures and MUST be revised
-# once real LG masters arrive (see DECISIONS D-002).
+# preprocessing_v2.md §8-8 그대로. 시트 1개에 대해 3종 신호(시트명/행1마커/max_col 범위)를
+# 매칭해 가중 합산. 신호 ≥2 일치 → confidence 1.0, 1개 → 0.7, 0개 → unknown.
+# LLM 호출 0회 — 전부 결정론적.
 
-versions:
-  v1_2:
-    description: "통합 마스터 v1.2 (미래 표준, 2025.09) — 빈 템플릿 단계"
-    threshold: 0.7
-    signals:
-      - type: sheet_exists
-        name: "History"
-        weight: 0.4
-      - type: col_count_range
-        range: [45, 75]
-        weight: 0.3
-      - type: header_text_contains
-        keywords: ["Common", "FMEA", "HSMS"]
-        weight: 0.3
+forms:
+  # ── 변경부품 list family (91/95/96/97 sub-variant) ──
+  # 같은 양식이 시간 흐름에 따라 컬럼 5~6개 삽입돼 진화. 헤더 이름 기반 매핑 필수.
+  변경부품_list_family:
+    sheet_name_patterns:
+      - "^변경.?부품 list"
+      - "^변경 부품 list\\("
+      - "^WS[ED9][D9][0-9]"           # 모델별 시트 (Steam Heater 케이스)
+      - "^BO\\d{3}[A-Z]"              # 호주 B700 모델별 시트
+      - "^WDEK\\d"
+      - "^LSIU\\d"
+    row1_markers:
+      - col: 2
+        value: "New & Changing Part"
+      - col: 2
+        value: "New&Changing Part"
+    max_col_range: [91, 100]
+    confidence_full: 1.0
+    confidence_partial: 0.7
+    # 어댑터가 max_col로 sub-variant(91/95/96/97) 결정 → form_version 부여
+    sub_variants:
+      변경부품_list_91: [91, 92]
+      변경부품_list_95: [93, 95]
+      변경부품_list_96: [96, 96]
+      변경부품_list_97: [97, 100]
 
-  96col:
-    description: "현재 운용 중 양식 (2024.11~) — 실질적 정답 schema"
-    threshold: 0.7
-    signals:
-      - type: col_count_range
-        range: [80, 110]
-        weight: 0.4
-      - type: marker_cell
-        value: "aaaa"
-        weight: 0.3
-      - type: stage_row
-        markers: ["CP", "PP", "DV", "PV", "PQ"]
-        weight: 0.3
+  # ── 신규부품리스트 (BO24 패밀리, 75col) ──
+  신규부품리스트_75:
+    sheet_name_patterns:
+      - "^신규부품리스트$"
+      - "^신규부품 리스트$"
+    row1_markers:
+      # Key-In / LOV 마커가 다수 출현하는 입력방식 헤더
+      - col_range: [1, 75]
+        value_in: ["Key-In", "LOV"]
+        min_count: 20
+    max_col_range: [70, 80]
+    confidence_full: 1.0
+    confidence_partial: 0.7
 
-  56col:
-    description: "중간 변형 (단일 등급, 2024.04~2024.10)"
-    threshold: 0.7
-    signals:
-      - type: col_count_range
-        range: [45, 79]
-        weight: 0.5
-      - type: sheet_name_contains
-        keywords: ["Better", "Best", "Good"]
-        weight: 0.5
+  # ── v1.2 통합 마스터 (미래 표준, 현재 빈 템플릿) ──
+  v1_2_template_59:
+    file_name_patterns: ["v1[._]?2", "통합.*Integrated"]
+    sheet_name_patterns:
+      - "^Master\\(Best\\)"
+      - "^Good-"
+      - "^Goood-"
+      - "^Better-"
+      - "^Best-"
+      - "^History$"
+    row1_markers:
+      - col: 2
+        value_regex: "^공통.*Common"
+    max_col_range: [55, 65]
+    confidence_full: 1.0
+    confidence_partial: 0.7
 
-  20col:
-    description: "구버전 (2024.04 이전, 단순 단일 헤더)"
-    threshold: 0.7
-    signals:
-      - type: col_count_range
-        range: [18, 35]
-        weight: 0.6
-      - type: header_text_contains
-        keywords: ["Base P/No", "P/no.", "Part Name", "Set P/No"]
-        weight: 0.4
+  # ── base_master 구버전 (24col) ──
+  base_master_24:
+    sheet_name_patterns:
+      - "^개발변경부품리스트$"
+      - "^개발변경부품 리스트$"
+    file_name_patterns: ["base_master"]
+    row2_markers:
+      - col: 2
+        value: "No."
+      - col: 1
+        value_regex: "^P\\/[nN]o"
+    max_col_range: [20, 28]
+    confidence_full: 1.0
+    confidence_partial: 0.7
 
-  bom_tree:
-    description: "PDM/PLM BOM 트리 덤프 (ag-grid 1.0). 변경점 마스터 아님 — bom_edges 도메인."
-    threshold: 0.7
-    signals:
-      - type: sheet_name_contains
-        keywords: ["ag-grid"]
-        weight: 0.5
-      - type: header_text_contains
-        keywords: ["Lvl", "Check Out", "I.S", "ModelECO"]
-        weight: 0.5
+  # ── UAE 24인치 신규 개발리스트 (46~58col) ──
+  UAE_신규개발_58:
+    sheet_name_patterns:
+      - "^신규 개발리스트"
+      - "^신규개발리스트"
+    file_name_patterns: ["UAE", "이라크"]
+    row2_markers:
+      - col: 2
+        value: "New & Changing Part"
+    max_col_range: [40, 60]
+    confidence_full: 1.0
+    confidence_partial: 0.7
+
+  # ── BOM ag-grid (36col) ──
+  # WDEK/LSIU/base_bom 모두 동일 단일 시트 양식. parts + bom_edges 양쪽 적재.
+  BOM_ag_grid_36:
+    sheet_name_patterns:
+      - "^ag-grid$"
+      - "^aggrid$"
+    file_name_patterns: ["base_bom", "_CVZ_EKHQ", "ag.?grid"]
+    max_col_range: [30, 40]
+    min_row: 100
+    confidence_full: 1.0
+    confidence_partial: 0.7
+
+  # ── Activity Master 메타 (11~13col, run-level config) ──
+  activity_master_meta:
+    sheet_name_patterns:
+      - "^Master$"
+    row2_markers:
+      - col: 2
+        value_regex: "^※ Master"
+      - col: 1
+        value_regex: "^Master|모델명"
+    max_col_range: [9, 14]
+    confidence_full: 1.0
+    confidence_partial: 0.7
+
+# ── 우선순위 (동점 시 위 → 아래 순으로 채택) ──
+priority:
+  - 변경부품_list_family
+  - 신규부품리스트_75
+  - BOM_ag_grid_36
+  - v1_2_template_59
+  - UAE_신규개발_58
+  - base_master_24
+  - activity_master_meta
+
+# 분류 임계
+threshold:
+  full: 0.99       # 신호 ≥2 매칭
+  partial: 0.69    # 신호 1 매칭
+  unknown: 0.0

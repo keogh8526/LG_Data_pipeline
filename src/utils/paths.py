@@ -1,4 +1,4 @@
-"""Canonical project paths."""
+"""Canonical project paths (v2.0)."""
 
 from __future__ import annotations
 
@@ -14,13 +14,17 @@ INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
 QUARANTINE_DIR = DATA_DIR / "quarantine"
 REPORTS_DIR = DATA_DIR / "reports"
+EVAL_DIR = DATA_DIR / "eval"
 
 # --- Config ---------------------------------------------------------------
 CONFIG_DIR = PROJECT_ROOT / "config"
 FORM_SIGNATURES_PATH = CONFIG_DIR / "form_signatures.yaml"
-MAPPING_RULES_DIR = CONFIG_DIR / "mapping_rules"
+COLUMN_DICTIONARY_PATH = CONFIG_DIR / "column_dictionary.yaml"
 NORMALIZATION_PATH = CONFIG_DIR / "normalization.yaml"
 AXIOMS_PATH = CONFIG_DIR / "axioms.yaml"
+NARRATIVIZE_TEMPLATES_PATH = CONFIG_DIR / "narrativize_templates.yaml"
+QUERY_ROUTER_PATH = CONFIG_DIR / "query_router.yaml"
+MAPPING_RULES_DIR = CONFIG_DIR / "mapping_rules"  # legacy v1 (호환용)
 
 # --- Ontology -------------------------------------------------------------
 ONTOLOGY_DIR = PROJECT_ROOT / "src" / "ontology"

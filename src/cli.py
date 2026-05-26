@@ -1,25 +1,27 @@
-"""Unified Typer CLI for the LG BOM preprocessing pipeline.
+"""v2.0 LG BOM 전처리 + 검색 CLI.
 
-Run with ``python -m src.cli <command>``. Step 0-5 commands:
+``python -m src.cli <command>``. 명령 그룹:
 
-    inventory                      scan raw Excel files into a parquet inventory
-    classify                       classify the form version of files
-    schema-export                  export the answer schema as JSON Schema
-    preprocess                     one-shot preprocessing preview (no persistence)
+    inventory                      raw 디렉토리 → file_inventory.parquet
+    classify                       시트 단위 양식 분류
+    schema-export                  Core 13 schema → JSON Schema export
+    narrativize                    단일 행 narrative 미리보기 (디버그)
 
-    pipeline run <path>            full run: process + validate + diff + report
-    pipeline review --run-id ID    open the report / state for a run
-    pipeline commit --run-id ID    promote a dry-run to committed
-    pipeline rollback --run-id ID  move a committed run to rolled_back
+    pipeline run [PATH]            classify→adapter→normalize→narrativize→validate
+                                   → dry_run/<run_id>/
+    pipeline run --commit          + validation gate 통과 시 commit
+    pipeline commit  --run-id ID   dry_run → committed
+    pipeline rollback --run-id ID  committed → rolled_back
 
-    quarantine list --run-id ID    list quarantined rows for a run
+    quarantine list --run-id ID    격리된 행 조회
 
-    db init                        create tables + (Postgres) pgvector / pg_trgm
-    db load --run-id ID            load a committed run into Postgres
-    db rollback --run-id ID        delete a run's change events from Postgres
-    db status                      list runs in preprocessing_runs
-    db verify --run-id ID          per-table row counts for a run
-    search QUERY                   hybrid pgvector + pg_trgm search
+    db init                        ORM 테이블 + (Postgres) schema.sql 적용
+    db load --run-id ID [--embed]  committed run → PG 적재
+    db rollback --run-id ID        DB 적재 원복
+    db status                      run 상태 조회
+    db verify --run-id ID          per-table count
+
+    search "<query>" [--top-k 5]   Query Router + Hybrid + RRF + Rerank + Graph
 """
 
 from __future__ import annotations
@@ -34,15 +36,13 @@ from src.db.engine import init_db, make_engine, session_factory
 from src.db.load import load_run, update_embeddings
 from src.db.models import ChangeEvent, Model, Part, PreprocessingRun
 from src.db.rollback import rollback_run as db_rollback_run
-from src.preprocess.classify import classify_dir, classify_form
+from src.preprocess.classify import classify_dir, classify_file
 from src.preprocess.inventory import build_inventory
 from src.preprocess.pipeline import (
     COMMITTED_ROOT,
     commit_run,
     discover_raw_files,
     generate_run_id,
-    preprocess_directory,
-    preprocess_file,
     read_state,
     reprocess_quarantine,
     rollback_run,
@@ -51,7 +51,7 @@ from src.preprocess.pipeline import (
 from src.preprocess.quarantine import list_quarantined
 from src.utils.paths import INTERIM_DIR, RAW_DIR, SCHEMA_JSON_PATH
 
-app = typer.Typer(help="LG BOM 전처리 파이프라인 CLI.")
+app = typer.Typer(help="LG BOM v2.0 전처리 + 검색 CLI.")
 pipeline_app = typer.Typer(help="dry-run / commit / rollback 사이클.")
 quarantine_app = typer.Typer(help="격리된 행 조회.")
 db_app = typer.Typer(help="PostgreSQL 적재 / 롤백 / 상태.")
@@ -60,42 +60,36 @@ app.add_typer(quarantine_app, name="quarantine")
 app.add_typer(db_app, name="db")
 
 
-# --- Top-level commands ---------------------------------------------------
+# --- Top-level commands --------------------------------------------------
 
 
 @app.command()
 def inventory(
-    raw_dir: Path = typer.Option(RAW_DIR, help="Directory of raw Excel files."),
+    raw_dir: Path = typer.Option(RAW_DIR, help="raw Excel 디렉토리."),
     output: Path = typer.Option(
-        INTERIM_DIR / "file_inventory.parquet", help="Output parquet path."
+        INTERIM_DIR / "file_inventory.parquet", help="출력 parquet."
     ),
 ) -> None:
-    """Step 0 — scan raw files and write the inventory parquet."""
+    """Step 0 — raw 파일 인벤토리."""
     df = build_inventory(raw_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output, index=False)
-
     if df.empty:
         typer.echo(f"No Excel files found under {raw_dir}.")
         return
-
     typer.echo(f"Inventory written to {output} ({len(df)} sheet rows).")
     typer.echo("\nForm-version guess (per file):")
     per_file = df.drop_duplicates("file_path")["form_version_guess"]
     for version, count in per_file.value_counts().items():
         typer.echo(f"  {version}: {count}")
-    typer.echo("\nHead:")
-    typer.echo(df.head(20).to_string())
 
 
 @app.command()
 def classify(
-    path: Path = typer.Argument(..., help="Excel file, or directory with --all."),
-    all_files: bool = typer.Option(
-        False, "--all", help="Treat PATH as a directory and classify every file."
-    ),
+    path: Path = typer.Argument(..., help="Excel 파일 또는 --all로 디렉토리."),
+    all_files: bool = typer.Option(False, "--all", help="PATH를 디렉토리로 처리."),
 ) -> None:
-    """Step 1 — classify the form version of one file or a directory."""
+    """Step 1 — 시트 단위 양식 분류."""
     if all_files or path.is_dir():
         results = classify_dir(path)
         counts: dict[str, int] = {}
@@ -104,26 +98,28 @@ def classify(
             flag = " [needs review]" if result.needs_review else ""
             typer.echo(
                 f"{Path(result.file_path).name}: {result.form_version} "
-                f"({result.confidence}){flag}"
+                f"({result.confidence:.2f}){flag}  sheets={len(result.sheet_results)}"
             )
         typer.echo("\nForm-version counts:")
         for version, count in sorted(counts.items()):
             typer.echo(f"  {version}: {count}")
         return
 
-    result = classify_form(path)
+    result, sheet_results = classify_file(path)
     typer.echo(f"{path.name}: {result.form_version} (confidence={result.confidence})")
-    typer.echo(f"  needs_review: {result.needs_review}")
-    typer.echo("  scores:")
-    for version, score in sorted(result.evidence.items()):
-        typer.echo(f"    {version}: {score}")
+    typer.echo("  per sheet:")
+    for sc in sheet_results:
+        typer.echo(
+            f"    {sc.sheet_name}: {sc.form_id} ({sc.confidence:.2f}) "
+            f"max_col={sc.max_col} signals={','.join(sc.signals_matched)}"
+        )
 
 
 @app.command("schema-export")
 def schema_export(
-    output: Path = typer.Option(SCHEMA_JSON_PATH, help="Output JSON Schema path."),
+    output: Path = typer.Option(SCHEMA_JSON_PATH, help="JSON Schema 출력 경로."),
 ) -> None:
-    """Step 2 — export the ChangeEventRow answer schema as JSON Schema."""
+    """Core 13 + ChangeEvent schema → JSON Schema."""
     from src.ontology.schema import export_schema_json
 
     export_schema_json(output)
@@ -131,65 +127,48 @@ def schema_export(
 
 
 @app.command()
-def preprocess(
-    path: Path = typer.Argument(..., help="Excel file or directory of raw files."),
-    run_id: str = typer.Option("", help="Batch id (defaults to a fresh one)."),
+def narrativize(
+    part_no: str = typer.Option(..., help="새 부품번호 (예: AGG74419321)"),
+    part_name: str = typer.Option("샘플 부품", help="부품명"),
+    change_point: str = typer.Option("", help="변경점 자유텍스트"),
+    change_reason: str = typer.Option("", help="변경 사유"),
+    model_code: str = typer.Option("WSED7667M.ABMQEUR", help="모델 코드"),
+    grade: str = typer.Option("Best-1", help="등급"),
+    change_type: str = typer.Option("Change", help="New|Change|Carry-over"),
 ) -> None:
-    """Step 3 — quick preview without persistence. Use `pipeline run` for the full cycle."""
-    run = run_id or generate_run_id()
-    if path.is_dir():
-        summary = preprocess_directory(path, run)
-        typer.echo(f"Run {summary.run_id}: {len(summary.results)} files")
-        typer.echo(
-            f"  rows_in={summary.rows_in}  rows_out={summary.rows_out}  "
-            f"quarantined={summary.quarantine_count}"
-        )
-        for result in summary.results:
-            typer.echo(
-                f"  {Path(result.file_path).name}: {result.status} "
-                f"[{result.form_version or '-'}]  "
-                f"rows={result.rows_out}  q={result.quarantine_count}"
-            )
-        return
+    """단일 row narrative 미리보기 (디버그용)."""
+    from src.preprocess.narrativize import narrativize as do_narr
 
-    result = preprocess_file(path, run)
-    typer.echo(f"Run {result.run_id}")
-    typer.echo(f"  status={result.status}  form={result.form_version}")
-    typer.echo(
-        f"  rows_in={result.rows_in}  rows_out={result.rows_out}  "
-        f"quarantined={result.quarantine_count}"
-    )
-    if result.error:
-        typer.echo(f"  error={result.error}")
+    core = {
+        "part_no": part_no,
+        "part_name": part_name,
+        "new_model_code": model_code,
+        "grade": grade,
+        "change_type": change_type,
+        "change_point": change_point or None,
+        "change_reason": change_reason or None,
+    }
+    typer.echo(do_narr(core, payload={}))
 
 
-# --- pipeline sub-app -----------------------------------------------------
+# --- pipeline sub-app ---------------------------------------------------
 
 
 @pipeline_app.command("run")
 def pipeline_run(
-    path: Path = typer.Argument(
-        RAW_DIR, help="Excel file or directory (default: data/raw)."
-    ),
-    commit: bool = typer.Option(
-        False, "--commit", help="Promote to committed/ immediately."
-    ),
+    path: Path = typer.Argument(RAW_DIR, help="Excel 파일 또는 디렉토리 (기본: data/raw)."),
+    commit: bool = typer.Option(False, "--commit", help="validation 통과 시 commit."),
 ) -> None:
-    """Step 4 — full pipeline: process + validate + diff + report + persist."""
-    files = (
-        discover_raw_files(path)
-        if path.is_dir()
-        else [path]
-    )
+    """Step 3~7 — full pipeline run."""
+    files = discover_raw_files(path) if path.is_dir() else [path]
     if not files:
         typer.echo(f"No Excel files found under {path}.")
         raise typer.Exit(code=1)
-
     mode = "commit" if commit else "dry-run"
     result = run_pipeline(files, mode=mode)
     typer.echo(f"Run {result.run_id} [{result.status}]")
     typer.echo(
-        f"  rows_in={result.rows_in}  rows_out={result.rows_out}  "
+        f"  rows_in={result.rows_in} rows_out={result.rows_out} "
         f"quarantined={result.quarantine_count}"
     )
     agg = result.aggregate_validation
@@ -204,7 +183,7 @@ def pipeline_run(
 
 @pipeline_app.command("review")
 def pipeline_review(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """Open the state and report path for a run."""
+    """run 상태 + report 경로 출력."""
     state = read_state(run_id)
     if state is None:
         typer.echo(f"Unknown run_id: {run_id}")
@@ -214,7 +193,7 @@ def pipeline_review(run_id: str = typer.Option(..., "--run-id")) -> None:
 
 @pipeline_app.command("commit")
 def pipeline_commit(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """Promote a dry-run to committed/ (Step 5 will layer DB load behind this)."""
+    """dry_run → committed (gate 통과 시)."""
     try:
         target = commit_run(run_id)
     except (FileNotFoundError, ValueError) as exc:
@@ -225,7 +204,7 @@ def pipeline_commit(run_id: str = typer.Option(..., "--run-id")) -> None:
 
 @pipeline_app.command("rollback")
 def pipeline_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """Move a committed run to rolled_back/ (Step 5 adds DB delete behind this)."""
+    """committed → rolled_back."""
     try:
         target = rollback_run(run_id)
     except FileNotFoundError as exc:
@@ -234,12 +213,12 @@ def pipeline_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
     typer.echo(f"Rolled back -> {target}")
 
 
-# --- quarantine sub-app ---------------------------------------------------
+# --- quarantine sub-app -------------------------------------------------
 
 
 @quarantine_app.command("list")
 def quarantine_list(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """List quarantined rows for a run."""
+    """격리된 행 조회."""
     rows = list_quarantined(run_id)
     if not rows:
         typer.echo(f"No quarantine records for {run_id}.")
@@ -256,31 +235,16 @@ def quarantine_list(run_id: str = typer.Option(..., "--run-id")) -> None:
 
 @quarantine_app.command("reprocess")
 def quarantine_reprocess(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """Re-run normalize on the quarantined rows with current rules.
-
-    Writes a fresh run id with the now-passing rows under ``dry_run/`` and
-    moves still-failing rows into that run's quarantine bucket. Use after
-    fixing axioms / normalization rules.
-    """
     summary = reprocess_quarantine(run_id)
-    if summary["records"] == 0:
-        typer.echo(f"No quarantine records for {run_id}.")
-        return
-    typer.echo(
-        f"Reprocessed {summary['records']} records from {run_id} "
-        f"-> {summary['new_run_id']}"
-    )
-    typer.echo(
-        f"  now_pass={summary['now_pass']}  still_fail={summary['still_fail']}"
-    )
+    typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
 
 
-# --- db sub-app ----------------------------------------------------------
+# --- db sub-app ---------------------------------------------------------
 
 
 @db_app.command("init")
 def db_init() -> None:
-    """Step 5 — create tables and (on Postgres) apply schema.sql."""
+    """ORM 테이블 + Postgres schema.sql 적용."""
     engine = make_engine()
     init_db(engine)
     typer.echo(f"Initialized {engine.url}.")
@@ -289,9 +253,9 @@ def db_init() -> None:
 @db_app.command("load")
 def db_load(
     run_id: str = typer.Option(..., "--run-id"),
-    embed: bool = typer.Option(False, "--embed", help="Also update embeddings."),
+    embed: bool = typer.Option(False, "--embed", help="multi-vector 임베딩까지 생성."),
 ) -> None:
-    """Load a committed run into Postgres (relational + optional vector)."""
+    """committed run → PostgreSQL."""
     run_dir = COMMITTED_ROOT / run_id
     if not run_dir.exists():
         typer.echo(f"No committed run: {run_id}")
@@ -307,7 +271,6 @@ def db_load(
 
 @db_app.command("rollback")
 def db_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """Delete the change events / details / bom edges for ``run_id``."""
     engine = make_engine()
     Session = session_factory(engine)
     with Session() as session:
@@ -317,7 +280,6 @@ def db_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
 
 @db_app.command("status")
 def db_status() -> None:
-    """List runs in preprocessing_runs."""
     engine = make_engine()
     Session = session_factory(engine)
     with Session() as session:
@@ -326,52 +288,59 @@ def db_status() -> None:
         typer.echo("No runs.")
         return
     for row in rows:
-        typer.echo(
-            f"  {row.run_id}  status={row.status}  rows={row.rows_inserted}"
-        )
+        typer.echo(f"  {row.run_id}  status={row.status}  rows={row.rows_inserted}")
 
 
 @db_app.command("verify")
 def db_verify(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """Per-table row counts for ``run_id`` (sanity check after load/rollback)."""
     engine = make_engine()
     Session = session_factory(engine)
     counts: dict[str, int] = {}
     with Session() as session:
-        for label, model in (("parts", Part), ("models", Model), ("change_events", ChangeEvent)):
-            counts[label] = (
-                session.execute(
-                    select(func.count()).select_from(model).where(model.run_id == run_id)
-                ).scalar_one()
-            )
+        for label, model in (
+            ("parts", Part),
+            ("models", Model),
+            ("change_events", ChangeEvent),
+        ):
+            counts[label] = session.execute(
+                select(func.count()).select_from(model).where(model.run_id == run_id)
+            ).scalar_one()
     typer.echo(f"{run_id}: {counts}")
+
+
+# --- search -------------------------------------------------------------
 
 
 @app.command()
 def search(
-    query: str = typer.Argument(..., help="Free-text query."),
-    top_k: int = typer.Option(10, "--top-k"),
-    form_version: str = typer.Option(
-        "", "--form-version", help="Optional VersionRAG filter."
-    ),
+    query: str = typer.Argument(..., help="자유텍스트 쿼리."),
+    top_k: int = typer.Option(5, "--top-k"),
+    form_version: str = typer.Option("", "--form-version", help="VersionRAG 필터."),
 ) -> None:
-    """Hybrid pgvector + pg_trgm search over change_events."""
-    from src.db.search import hybrid_search
+    """v2.0 §7 — Query Router + Hybrid + RRF + Rerank + Graph 검색."""
+    from src.search.pipeline import search as do_search
 
     engine = make_engine()
     Session = session_factory(engine)
     with Session() as session:
-        hits = hybrid_search(
+        hits = do_search(
             session,
             query,
             top_k=top_k,
             form_version=form_version or None,
         )
-    for hit in hits:
+    if not hits:
+        typer.echo("(no hits)")
+        return
+    for h in hits:
         typer.echo(
-            f"  [{hit.score:.3f}] event_id={hit.event_id} "
-            f"({hit.form_version}): {hit.change_point}"
+            f"  [{h.score:.3f}] event_id={h.event_id} ({h.form_version}) "
+            f"part={h.part_no} model={h.new_model_code}"
         )
+        if h.narrative_text:
+            typer.echo(f"     {h.narrative_text[:160]}...")
+        if h.graph_neighbors:
+            typer.echo(f"     +{len(h.graph_neighbors)} neighbors")
 
 
 if __name__ == "__main__":

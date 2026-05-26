@@ -1,35 +1,45 @@
-# Step 2 — deterministic domain axioms.
+# v2.0 Step 2 — 결정론적 도메인 axiom.
 #
-# These rules are the validation ground truth. They never call an LLM. Patterns
-# and vocabularies are derived from the project spec and synthetic fixtures, and
-# MUST be revised once real LG data is available (see DECISIONS D-002).
+# preprocessing_v2.md §4-1 + §11 기반. LLM 호출 0회. 실측 19개 파일에서
+# 관측된 변형 모두 수용하도록 보수적으로 완화.
 
 part_no:
+  # ^[A-Z]{2,3}\d{7,8}$ — preprocessing_v2.md §4-2 PART_NO_PATTERN
   pattern: '^[A-Z]{2,3}\d{7,8}$'
   min_length: 9
   max_length: 11
-  description: "부품번호: 영문 2-3자 + 숫자 7-8자"
+  description: "부품번호: 영문 2-3자 + 숫자 7-8자 (10자리 코딩)"
 
 model_code:
-  # 실데이터 관측: WSED7667M.ABMQEUR (정형), LSIS6338F.ARSLSTC, WDEK9419S.ASTLSGN,
-  # WS7D7610B (suffix 없음 + 중간에 영문 D 끼임) 모두 유효한 모델 코드. 영문-숫자
-  # 혼재 접두부 + optional dot suffix 허용.
-  pattern: '^[A-Z][A-Z0-9]{3,14}(\.[A-Z0-9.]+)?$'
-  description: "모델코드: 영문 시작 + 영문/숫자 4~15자 + optional .suffix"
+  # 실측 변형:
+  #   "WSED7667M.ABMQEUR" (정형 .suffix)
+  #   "WSED7667M" (단순)
+  #   "WSED7665B(CB)" (괄호 marker)
+  #   "WSED7613S / Cb (이집트)" (슬래시 sub + 한국어 국가 marker, 정규화로 개행 제거됨)
+  #   "WS7D7610B" (영숫자 혼재)
+  #   "BO605G1S5" (영문+숫자 반복)
+  # axiom: 영문 시작 + 영숫자 본체 + optional .suffix + optional 슬래시 sub +
+  #         optional 괄호 marker (한국어 포함).
+  pattern: '^([A-Z][A-Z0-9]{2,18}(\.[A-Z0-9.]+)?(\s*\/\s*[A-Z0-9]+)?(\s*\([^)]+\))?|UNKNOWN)$'
+  description: "모델코드: 영문 + 영숫자 + optional .suffix + optional / sub + optional (국가/marker). 또는 UNKNOWN sentinel."
 
 change_type:
   allowed: ["New", "Change", "Carry-over"]
   aliases:
     "신규": "New"
+    "New": "New"
     "N": "New"
     "변경": "Change"
+    "Change": "Change"
     "C": "Change"
     "유지": "Carry-over"
     "K": "Carry-over"
     "Keep": "Carry-over"
+    "Carry-over": "Carry-over"
     "carryover": "Carry-over"
 
 grade:
+  # 실측: Good-1 STS / Best-1 BK 등 BK·STS 변형 다수. 'unknown' sentinel 포함.
   allowed:
     - "Best-1"
     - "Best-2"
@@ -39,6 +49,9 @@ grade:
     - "Good-2"
     - "Good-1 BK"
     - "Good-2 BK"
+    - "Good-1 STS"
+    - "Good-2 STS"
+    - "unknown"
   aliases:
     "Best1": "Best-1"
     "B1": "Best-1"
@@ -48,13 +61,40 @@ grade:
     "Better2": "Better-2"
     "Good1": "Good-1"
     "Good2": "Good-2"
+    "Good1 BK": "Good-1 BK"
+    "Good2 BK": "Good-2 BK"
+    "BK STS": "Good-1 BK"
 
 region:
-  allowed: ["EUR", "EUE", "EAP", "SJ", "SA", "AU"]
+  # 실측 19개 파일에서 등장한 모든 지역.
+  allowed: ["EUR", "EUE", "EAP", "SJ", "SA", "AU", "SG", "KR", "US"]
 
 bom_level:
   min: 0
   max: 10
 
 event_stage:
-  allowed: ["CP", "PP", "DV", "PV", "PQ"]
+  # 실측: MP / PreMP까지 등장.
+  allowed: ["CP", "PP", "DV", "PV", "PQ", "MP", "PreMP"]
+
+part_type:
+  allowed: ["사출", "Assy", "전장", "단품", "기타"]
+  aliases:
+    "Injection": "사출"
+    "Mechanical": "사출"
+    "MechanicalPart": "사출"
+    "Electronic": "전장"
+    "Single": "단품"
+    "Other": "기타"
+
+# Buyer code → region (column_dictionary.yaml에서 derived_from_buyer_code 처리)
+buyer_to_region:
+  LGEUR: "EUR"
+  LGEUE: "EUE"
+  LGEAP: "EAP"
+  LGESJ: "SJ"
+  LGESA: "SA"
+  LGEAU: "AU"
+  LGESG: "SG"
+  LGEKR: "KR"
+  LGEUS: "US"

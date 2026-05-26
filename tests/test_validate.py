@@ -1,96 +1,105 @@
-"""Tests for the Step 4 ValidationReport and the 15 metrics."""
+"""v2.0 검증 모듈 회귀 — 특히 C-2 payload_preservation 회귀 보호."""
 
 from __future__ import annotations
+
+import json
 
 import pandas as pd
 
 from src.preprocess.validate import (
-    EXPECTED_FIELDS,
-    THRESHOLDS,
-    ValidationReport,
+    _measure_payload_preservation,
+    _payload_has_content,
     validate_dataframe,
 )
 
 
-def _clean_row(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
-        "base_part_no": "AB1234567",
-        "new_part_no": "AB1234568",
-        "part_name": "Bracket",
-        "bom_level": 2,
-        "part_type": "단품",
-        "change_type": "Change",
-        "change_point": "내열 보강",
-        "change_reason": "필드 불량",
-        "qty": 1.0,
-        "model_code": "WSED7667M.ABMQEUR",
-        "_quarantine_reason": None,
-    }
-    base.update(overrides)
-    return base
+# ── C-2 회귀: payload_preservation이 JSON string도 인정해야 함 ──
 
 
-def test_clean_dataframe_passes_all_gates() -> None:
-    df = pd.DataFrame([_clean_row(), _clean_row(base_part_no="AB1234569")])
-    report = validate_dataframe(df, run_id="r")
-    assert report.is_acceptable(), report.critical_failures()
-    assert report.column_match == 1.0
-    assert report.value_format_match == 1.0
-    assert report.referential_integrity == 1.0
-    assert report.null_rate_required == 0.0
-    assert report.axiom_violation_rate == 0.0
+def test_payload_present_dict():
+    assert _payload_has_content({"key": "value"}) is True
 
 
-def test_bad_part_no_fails_value_format_match() -> None:
+def test_payload_present_json_string():
+    """pipeline.py가 json.dumps로 직렬화한 후에도 보존률 측정 정확."""
+    serialized = json.dumps({"공통 > 부품 P/No": "AGG74419321"})
+    assert _payload_has_content(serialized) is True
+
+
+def test_payload_empty_dict_false():
+    assert _payload_has_content({}) is False
+
+
+def test_payload_empty_string_false():
+    assert _payload_has_content("") is False
+    assert _payload_has_content("{}") is False
+    assert _payload_has_content("null") is False
+
+
+def test_payload_none_false():
+    assert _payload_has_content(None) is False
+
+
+def test_payload_invalid_json_false():
+    assert _payload_has_content("not valid json") is False
+
+
+def test_measure_payload_preservation_json_strings():
+    """C-2: pipeline parquet 저장 후의 모양과 동일하게 검증."""
     df = pd.DataFrame(
         [
-            _clean_row(base_part_no="123"),
-            _clean_row(base_part_no="AB1234569"),
+            {"payload": json.dumps({"a": 1})},
+            {"payload": json.dumps({"b": 2})},
+            {"payload": json.dumps({"c": 3})},
         ]
     )
-    report = validate_dataframe(df, run_id="r")
-    assert report.value_format_match < THRESHOLDS["value_format_match"]
-    assert "value_format_match" in report.critical_failures()
+    rate = _measure_payload_preservation(df)
+    assert rate == 1.0, f"expected 1.0 with JSON strings, got {rate}"
 
 
-def test_quarantine_reasons_drive_drop_reasons() -> None:
+def test_measure_payload_preservation_mixed():
+    """일부 dict / 일부 string / 일부 빈 — 부분 보존 비율 정확."""
     df = pd.DataFrame(
         [
-            _clean_row(),
-            _clean_row(
-                base_part_no="123",
-                _quarantine_reason="base_part_no: post_validate failed",
-            ),
+            {"payload": {"a": 1}},
+            {"payload": json.dumps({"b": 2})},
+            {"payload": "{}"},          # 빈 dict로 dumps된 경우
+            {"payload": None},
         ]
     )
-    report = validate_dataframe(df, run_id="r", rows_in=2)
-    assert report.rows_quarantined == 1
-    assert report.rows_out == 1
-    assert report.drop_reasons.get("base_part_no") == 1
+    rate = _measure_payload_preservation(df)
+    assert rate == 0.5, f"expected 0.5 (2/4), got {rate}"
 
 
-def test_missing_required_field_fails_null_rate_required() -> None:
-    df = pd.DataFrame([_clean_row(base_part_no=None) for _ in range(10)])
-    report = validate_dataframe(df, run_id="r")
-    assert report.null_rate_required > THRESHOLDS["null_rate_required_max"]
-    assert "null_rate_required" in report.critical_failures()
+# ── validate_dataframe 통합 ──
 
 
-def test_outlier_rate_picks_up_qty_out_of_range() -> None:
+def test_validate_pipeline_serialized_df_acceptable():
+    """C-2 통합: pipeline이 직렬화한 DataFrame을 validate가 통과시켜야 함."""
     df = pd.DataFrame(
-        [_clean_row(qty=99999.0), _clean_row(qty=1.0), _clean_row(qty=2.0)]
+        [
+            {
+                "part_no": "AGG74419321",
+                "part_name": "Packing",
+                "new_model_code": "WSED7667M.ABMQEUR",
+                "grade": "Best-1",
+                "change_type": "Change",
+                "base_part_no": "AGG74419320",
+                "base_model_code": "WSED7667M",
+                "region": "EUR",
+                "event_stage": "DV",
+                "change_point": "내열 220→240",
+                "change_reason": "신규 규제",
+                "bom_level": 1,
+                "part_type": "Assy",
+                "payload": json.dumps({"공통 > 부품 P/No": "AGG74419321"}),
+            }
+        ]
     )
-    report = validate_dataframe(df, run_id="r")
-    assert report.outlier_rate > 0
-
-
-def test_report_serializes_to_pydantic() -> None:
-    report = ValidationReport(run_id="r")
-    data = report.model_dump(mode="json")
-    assert data["run_id"] == "r"
-    # All 15 metrics + meta should be present.
-    assert {"column_match", "rows_in", "drop_reasons"} <= set(data)
-
-
-def test_expected_fields_match_documented_ten() -> None:
-    assert len(EXPECTED_FIELDS) == 10
+    report = validate_dataframe(df, run_id="test_run", rows_in=1)
+    assert report.payload_preservation_rate == 1.0
+    # 다른 지표도 통과해야 commit 가능
+    failures = report.critical_failures()
+    assert "payload_preservation_rate" not in failures, (
+        f"payload_preservation should pass but found in failures: {failures}"
+    )

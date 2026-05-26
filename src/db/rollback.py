@@ -1,12 +1,10 @@
-"""Step 5 — DB rollback for a loaded run.
+"""v2.0 Step 5 — 적재된 run의 DB 롤백.
 
-Mirrors :func:`src.preprocess.pipeline.rollback_run` at the DB layer: deletes
-the ``change_events`` and ``event_details`` rows for the given ``run_id`` and
-flips the corresponding :class:`PreprocessingRun` to ``rolled_back``.
+``src.preprocess.pipeline.rollback_run``의 DB 짝. 주어진 ``run_id``의
+change_events / bom_edges / test_plans / hsms_records / needs_review_queue
+행을 삭제하고 ``preprocessing_runs.status``를 ``rolled_back``로 전환.
 
-Parts and models are *not* removed because another run may still reference
-them (the latest run's metadata stays on the row). Reintroducing them later
-is harmless (``MERGE`` semantics in :func:`load_run`).
+parts / models는 다른 run이 참조할 수 있어 삭제하지 않음 (``MERGE`` 의미 유지).
 """
 
 from __future__ import annotations
@@ -17,7 +15,14 @@ from datetime import datetime, timezone
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from src.db.models import BomEdge, ChangeEvent, EventDetail, PreprocessingRun
+from src.db.models import (
+    BomEdge,
+    ChangeEvent,
+    HsmsRecord,
+    NeedsReview,
+    PreprocessingRun,
+    TestPlan,
+)
 from src.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -25,51 +30,36 @@ log = get_logger(__name__)
 
 @dataclass
 class RollbackResult:
-    """Counts deleted per table for a single rollback."""
+    """테이블별 삭제 결과."""
 
     run_id: str
     rows_deleted: dict[str, int] = field(default_factory=dict)
 
 
 def rollback_run(session: Session, run_id: str) -> RollbackResult:
-    """Delete the change events / details / bom edges loaded under ``run_id``.
-
-    Args:
-        session: An open SQLAlchemy session.
-        run_id: Batch identifier (must already exist in ``preprocessing_runs``).
-
-    Returns:
-        A :class:`RollbackResult` with per-table delete counts.
+    """``run_id``의 적재 행 일괄 삭제.
 
     Raises:
-        ValueError: If no run row exists for ``run_id``.
+        ValueError: 해당 run이 ``preprocessing_runs``에 없으면.
     """
     run_row = session.get(PreprocessingRun, run_id)
     if run_row is None:
         raise ValueError(f"unknown run: {run_id}")
 
     deleted: dict[str, int] = {}
-    deleted["event_details"] = (
-        session.execute(
-            delete(EventDetail).where(EventDetail.run_id == run_id)
-        ).rowcount
-        or 0
-    )
-    deleted["change_events"] = (
-        session.execute(
-            delete(ChangeEvent).where(ChangeEvent.run_id == run_id)
-        ).rowcount
-        or 0
-    )
-    deleted["bom_edges"] = (
-        session.execute(
-            delete(BomEdge).where(BomEdge.run_id == run_id)
-        ).rowcount
-        or 0
-    )
+    # FK 의존성 역순 삭제
+    for label, model_cls in (
+        ("needs_review_queue", NeedsReview),
+        ("test_plans", TestPlan),
+        ("hsms_records", HsmsRecord),
+        ("change_events", ChangeEvent),
+        ("bom_edges", BomEdge),
+    ):
+        deleted[label] = (
+            session.execute(delete(model_cls).where(model_cls.run_id == run_id)).rowcount or 0
+        )
 
     run_row.status = "rolled_back"
-    run_row.committed_at = run_row.committed_at  # keep original
     run_row.rows_inserted = {
         **(run_row.rows_inserted or {}),
         "rolled_back_at": datetime.now(timezone.utc).isoformat(),

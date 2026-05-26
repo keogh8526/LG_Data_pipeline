@@ -1,18 +1,17 @@
-"""Step 3/4 — preprocessing pipeline orchestration.
+"""v2.0 Step 3-8 — 전처리 파이프라인 orchestration.
 
-Per-file preprocessing (Step 3): ``classify -> extract -> map -> normalize ->
-resolve``. Run-level dry-run / commit / rollback (Step 4) is built on top of
-the per-file pipeline and lives entirely on the file system; Step 5 will add
-the DB-load layer behind the same commit / rollback verbs.
+per-file (실제로는 per-sheet) 전처리:
+  classify_sheet → adapter dispatch → normalize → narrativize → validate
 
-Run lifecycle:
+run-level dry_run / commit / rollback 사이클은 파일시스템 위에서 동작:
 
-    dry_run/<run_id>/   <- always produced by `run_pipeline`
-        files/*.parquet
+    dry_run/<run_id>/
+        rows.parquet         (모든 ChangeEvent 행)
+        bom.parquet          (BOM 어댑터의 (parts, edges))
         state.json
-        report.md           (also copied to data/reports/<run_id>.md)
-    committed/<run_id>/  <- after `commit_run`
-    rolled_back/<run_id>/ <- after `rollback_run`
+        report.md            → data/reports/<run_id>.md 사본
+    committed/<run_id>/      (commit 후)
+    rolled_back/<run_id>/    (rollback 후)
 """
 
 from __future__ import annotations
@@ -23,29 +22,43 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
-from src.preprocess.classify import classify_form
+from pydantic import ValidationError
+
+from src.ontology.schema import CoreFields
+from src.preprocess.adapters import (
+    BomExtraction,
+    ExtractedRow,
+    ProjectMeta,
+    extract_sheet,
+)
+from src.preprocess.classify import classify_file
 from src.preprocess.diff import DiffReport, diff_against_golden, load_golden
-from src.preprocess.extract import extract_rows
-from src.preprocess.map import apply_mapping, load_mapping_rule
-from src.preprocess.normalize import NormalizeReport, normalize_dataframe
+from src.preprocess.narrativize import narrativize
+from src.preprocess.normalize import normalize_core, normalize_semantic
 from src.preprocess.quarantine import (
     extract_quarantined,
     list_quarantined,
     save_quarantine,
 )
 from src.preprocess.report import build_markdown_report
-from src.preprocess.resolve import resolve_models, resolve_parts
+from src.preprocess.resolve import (
+    ResolvedEntity,
+    resolve_models,
+    resolve_part_names,
+    resolve_parts,
+    resolve_suppliers,
+)
 from src.preprocess.validate import ValidationReport, validate_dataframe
+from src.utils.excel import read_workbook
 from src.utils.logging import get_logger
 from src.utils.paths import GOLDEN_DIR, PROCESSED_DIR, REPORTS_DIR
 
 log = get_logger(__name__)
 
-# Filesystem layout for the run lifecycle.
 DRY_RUN_ROOT = PROCESSED_DIR / "dry_run"
 COMMITTED_ROOT = PROCESSED_DIR / "committed"
 ROLLED_BACK_ROOT = PROCESSED_DIR / "rolled_back"
@@ -54,30 +67,34 @@ RunMode = Literal["dry-run", "commit"]
 RunStatus = Literal["dry_run_complete", "committed", "rolled_back", "rejected"]
 
 
+# --- Result types --------------------------------------------------------
+
+
 @dataclass
-class PreprocessResult:
-    """Outcome of preprocessing one raw file."""
+class FileResult:
+    """파일 1개 처리 결과."""
 
     file_path: str
-    status: str  # "ok" | "needs_human_classification" | "empty" | "error"
+    status: str  # 'ok' | 'empty' | 'error' | 'needs_human_classification'
     run_id: str
-    form_version: str | None = None
-    df: pd.DataFrame | None = None
+    form_versions: list[str] = field(default_factory=list)
     rows_in: int = 0
     rows_out: int = 0
     quarantine_count: int = 0
-    normalize_report: NormalizeReport | None = None
+    bom_parts: int = 0
+    bom_edges: int = 0
+    project_meta: dict[str, Any] | None = None
     error: str | None = None
 
 
 @dataclass
 class RunResult:
-    """The outcome of a multi-file pipeline run."""
+    """run 결과."""
 
     run_id: str
     status: RunStatus
     mode: RunMode
-    results: list[PreprocessResult] = field(default_factory=list)
+    results: list[FileResult] = field(default_factory=list)
     aggregate_validation: ValidationReport | None = None
     file_validations: list[tuple[str, ValidationReport, DiffReport | None]] = field(
         default_factory=list
@@ -99,217 +116,320 @@ class RunResult:
 
 
 def generate_run_id() -> str:
-    """Return a fresh ``run_<UTC timestamp>_<short uuid>`` batch identifier."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return f"run_{stamp}_{uuid.uuid4().hex[:6]}"
 
 
-def _attach_metadata(
-    df: pd.DataFrame, file_path: Path, form_version: str, run_id: str
-) -> pd.DataFrame:
-    """Attach provenance columns to the processed DataFrame."""
-    df = df.copy()
-    df["source_file"] = str(file_path)
-    df["form_version"] = form_version
-    df["extracted_at"] = datetime.now(timezone.utc).isoformat()
-    df["run_id"] = run_id
-    return df
+# --- Per-file processing -------------------------------------------------
 
 
-def preprocess_file(file_path: Path, run_id: str) -> PreprocessResult:
-    """Run the deterministic preprocessing pipeline on one file.
-
-    Args:
-        file_path: Path to a raw Excel file.
-        run_id: Batch identifier.
+def _process_extracted_rows(
+    rows: list[ExtractedRow],
+    file_path: Path,
+    form_id: str,
+    run_id: str,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    """ExtractedRow 리스트 → DataFrame-ready dict 리스트 + 통계.
 
     Returns:
-        A :class:`PreprocessResult`.
+        (records, rows_in, rows_out, quarantined).
     """
-    classification = classify_form(file_path)
-    if classification.form_version == "unknown":
-        return PreprocessResult(
-            file_path=str(file_path),
-            status="needs_human_classification",
-            run_id=run_id,
+    rows_in = len(rows)
+    records: list[dict[str, Any]] = []
+    quarantined = 0
+
+    for row in rows:
+        core_norm, fails = normalize_core(row.core)
+        semantic_norm = normalize_semantic(row.semantic)
+
+        # I-2: Pydantic CoreFields 검증 — 필수 필드 / enum / 정규식 통과 여부 확인.
+        # ValidationError는 ExtractedRow 단위 quarantine 사유로 누적.
+        # core_norm의 None 값도 Pydantic에 명시 전달 — validator가 None을 UNKNOWN/None으로
+        # 변환하도록. (이전: None 값을 제외하면 Pydantic이 "Field required" 오류 발생)
+        pydantic_reason: str | None = None
+        try:
+            CoreFields(**core_norm)
+        except ValidationError as exc:
+            # 가장 첫 에러만 사유로 (전체 dump는 너무 길어 quarantine_reason 가독성 해침)
+            err = exc.errors()[0] if exc.errors() else {}
+            loc = ".".join(str(x) for x in err.get("loc", []))
+            msg = err.get("msg", str(exc))
+            pydantic_reason = f"core[{loc}]={msg}"
+
+        reasons: list[str] = [f"{k}={v}" for k, v in fails.items()]
+        if pydantic_reason:
+            reasons.append(pydantic_reason)
+        quarantine_reason = "; ".join(reasons) if reasons else None
+        if quarantine_reason:
+            quarantined += 1
+
+        narrative = narrativize(core_norm, row.payload)
+        record = {
+            **core_norm,
+            "payload": row.payload,
+            "semantic_text": semantic_norm,
+            "narrative_text": narrative,
+            "form_version": row.source_meta.get("form_version", form_id),
+            "source_file": row.source_meta.get("source_file", file_path.name),
+            "source_sheet": row.source_meta.get("source_sheet", ""),
+            "source_row": row.source_meta.get("source_row", 0),
+            "run_id": run_id,
+            "confidence": 1.0,
+            "needs_review": bool(quarantine_reason),
+            "_quarantine_reason": quarantine_reason,
+        }
+        records.append(record)
+
+    rows_out = rows_in - quarantined
+    return records, rows_in, rows_out, quarantined
+
+
+def preprocess_file(file_path: Path, run_id: str) -> tuple[FileResult, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """파일 1개 → (FileResult, event records, parts records, edges records).
+
+    한 파일의 모든 시트에 대해 분류 → 어댑터 dispatch → normalize → narrativize.
+    """
+    file_class, sheet_classes = classify_file(file_path)
+    if file_class.error:
+        return (
+            FileResult(
+                file_path=str(file_path),
+                status="error",
+                run_id=run_id,
+                error=file_class.error,
+            ),
+            [],
+            [],
+            [],
         )
-    if classification.form_version == "bom_tree":
-        # BOM tree dumps populate ``bom_edges`` directly; they are not
-        # change-event masters and have no mapping rule.
-        log.info("pipeline.bom_tree_deferred", file=file_path.name)
-        return PreprocessResult(
-            file_path=str(file_path),
-            status="bom_tree_deferred",
-            run_id=run_id,
-            form_version=classification.form_version,
-        )
+
+    event_records: list[dict[str, Any]] = []
+    parts_records: list[dict[str, Any]] = []
+    edge_records: list[dict[str, Any]] = []
+    form_versions: set[str] = set()
+    total_in = total_out = total_quar = 0
+    project_meta: dict[str, Any] | None = None
 
     try:
-        rule = load_mapping_rule(classification.form_version)
-        raw_df = extract_rows(file_path, rule)
-    except Exception as exc:  # noqa: BLE001 — record and return
-        log.warning("pipeline.extract_failed", file=file_path.name, error=str(exc))
-        return PreprocessResult(
-            file_path=str(file_path),
-            status="error",
-            run_id=run_id,
-            form_version=classification.form_version,
-            error=str(exc),
+        sheets = read_workbook(file_path)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            FileResult(
+                file_path=str(file_path),
+                status="error",
+                run_id=run_id,
+                error=f"read_workbook: {exc}",
+            ),
+            [],
+            [],
+            [],
         )
 
-    if raw_df.empty:
-        return PreprocessResult(
-            file_path=str(file_path),
-            status="empty",
-            run_id=run_id,
-            form_version=classification.form_version,
+    sheet_idx = {s.name: s for s in sheets}
+    for sc in sheet_classes:
+        if sc.form_id == "unknown":
+            continue
+        sheet = sheet_idx.get(sc.sheet_name)
+        if sheet is None:
+            continue
+
+        file_meta = {"run_id": run_id, "form_id": sc.form_id}
+        result = extract_sheet(file_path, sheet, sc.form_id, file_meta)
+
+        if isinstance(result, BomExtraction):
+            parts_records.extend(result.parts)
+            edge_records.extend(result.bom_edges)
+            form_versions.add(sc.form_id)
+            continue
+
+        if isinstance(result, ProjectMeta):
+            project_meta = {
+                "source_sheet": result.source_sheet,
+                "date": result.date,
+                "phase_dates": result.phase_dates,
+                "description": result.description,
+            }
+            continue
+
+        # list[ExtractedRow]
+        records, rows_in, rows_out, quar = _process_extracted_rows(
+            result, file_path, sc.form_id, run_id
         )
+        event_records.extend(records)
+        form_versions.add(sc.form_id)
+        total_in += rows_in
+        total_out += rows_out
+        total_quar += quar
 
-    mapped = apply_mapping(raw_df, rule)
-    normalized, report = normalize_dataframe(mapped, run_id)
-    resolved = resolve_models(resolve_parts(normalized))
-    final_df = _attach_metadata(
-        resolved, file_path, classification.form_version, run_id
-    )
-
-    quarantine_count = int(final_df["_quarantine_reason"].notna().sum())
-    log.info(
-        "pipeline.done",
-        file=file_path.name,
-        form=classification.form_version,
-        rows_in=len(raw_df),
-        rows_out=len(final_df) - quarantine_count,
-        quarantine=quarantine_count,
-    )
-    return PreprocessResult(
+    status = "ok" if (event_records or parts_records or project_meta) else "empty"
+    file_result = FileResult(
         file_path=str(file_path),
-        status="ok",
+        status=status,
         run_id=run_id,
-        form_version=classification.form_version,
-        df=final_df,
-        rows_in=len(raw_df),
-        rows_out=len(final_df) - quarantine_count,
-        quarantine_count=quarantine_count,
-        normalize_report=report,
+        form_versions=sorted(form_versions),
+        rows_in=total_in,
+        rows_out=total_out,
+        quarantine_count=total_quar,
+        bom_parts=len(parts_records),
+        bom_edges=len(edge_records),
+        project_meta=project_meta,
     )
-
-
-# --- Run lifecycle --------------------------------------------------------
-
-
-def _persist_file(
-    result: PreprocessResult, run_dir: Path
-) -> tuple[ValidationReport, DiffReport | None]:
-    """Save a processed file's parquet, quarantine, and per-file validation.
-
-    Returns the validation report plus an optional golden-diff report.
-    """
-    file_stem = Path(result.file_path).stem
-    files_dir = run_dir / "files"
-    files_dir.mkdir(parents=True, exist_ok=True)
-
-    if result.df is not None:
-        result.df.to_parquet(files_dir / f"{file_stem}.parquet", index=False)
-        quarantined = extract_quarantined(result.df, result.run_id, result.file_path)
-        save_quarantine(quarantined, result.run_id, file_stem)
-
-    validation = validate_dataframe(
-        result.df if result.df is not None else pd.DataFrame(),
-        run_id=result.run_id,
-        file_path=result.file_path,
-        form_version=result.form_version,
-        rows_in=result.rows_in,
+    log.info(
+        "pipeline.file_done",
+        file=file_path.name,
+        rows_in=total_in,
+        rows_out=total_out,
+        quarantine=total_quar,
+        bom_parts=len(parts_records),
+        bom_edges=len(edge_records),
     )
-
-    diff_report: DiffReport | None = None
-    if result.df is not None:
-        golden = load_golden(GOLDEN_DIR, Path(result.file_path))
-        if golden is not None:
-            diff_report = diff_against_golden(result.df, golden)
-
-    return validation, diff_report
+    return file_result, event_records, parts_records, edge_records
 
 
-def _aggregate_validation(
-    results: list[PreprocessResult],
-    file_validations: list[tuple[str, ValidationReport, DiffReport | None]],
-    run_id: str,
-) -> ValidationReport:
-    """Build an aggregate validation by concatenating all processed DataFrames."""
-    frames = [r.df for r in results if r.df is not None]
-    if not frames:
-        return ValidationReport(run_id=run_id)
-    combined = pd.concat(frames, ignore_index=True)
-    total_in = sum(r.rows_in for r in results)
-    return validate_dataframe(
-        combined, run_id=run_id, rows_in=total_in or len(combined)
-    )
+# --- Run lifecycle -------------------------------------------------------
 
 
-def _write_state(run_dir: Path, payload: dict[str, object]) -> Path:
-    """Write ``state.json`` for a run directory."""
+def _write_state(run_dir: Path, payload: dict[str, Any]) -> Path:
     path = run_dir / "state.json"
-    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
     return path
 
 
+def read_state(run_id: str) -> dict[str, Any] | None:
+    """run_id에 해당하는 state.json 로드 (dry_run/committed/rolled_back 중 검색)."""
+    for root in (DRY_RUN_ROOT, COMMITTED_ROOT, ROLLED_BACK_ROOT):
+        path = root / run_id / "state.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    return None
+
+
+def discover_raw_files(directory: Path) -> list[Path]:
+    """디렉토리에서 엑셀 파일 모두 수집."""
+    suffixes = {".xlsx", ".xlsm", ".xls"}
+    return sorted(p for p in directory.rglob("*") if p.suffix.lower() in suffixes)
+
+
 def run_pipeline(
-    files: list[Path], mode: RunMode = "dry-run", run_id: str | None = None
+    files: list[Path],
+    mode: RunMode = "dry-run",
+    run_id: str | None = None,
 ) -> RunResult:
-    """Process a batch of files end-to-end and persist a dry-run / commit.
+    """전체 파이프라인 1회 run.
 
-    Args:
-        files: Raw Excel files to process.
-        mode: ``"dry-run"`` to save under ``dry_run/`` only; ``"commit"`` to
-            additionally promote to ``committed/`` (Step 5 wires the DB load
-            behind the same verb).
-        run_id: Optional pre-allocated batch id (else generated).
-
-    Returns:
-        A :class:`RunResult` with paths and aggregated metrics.
+    files를 처리해 dry_run/<run_id>/에 저장. mode='commit'이면 committed/로
+    승격 (validation gate 통과 시).
     """
     run = run_id or generate_run_id()
     run_dir = DRY_RUN_ROOT / run
     run_dir.mkdir(parents=True, exist_ok=True)
     log.info("pipeline.run.start", run_id=run, mode=mode, files=len(files))
 
-    results = [preprocess_file(path, run) for path in files]
+    file_results: list[FileResult] = []
+    all_events: list[dict[str, Any]] = []
+    all_parts: list[dict[str, Any]] = []
+    all_edges: list[dict[str, Any]] = []
+    project_metas: list[dict[str, Any]] = []
 
+    for path in files:
+        fr, events, parts, edges = preprocess_file(path, run)
+        file_results.append(fr)
+        all_events.extend(events)
+        all_parts.extend(parts)
+        all_edges.extend(edges)
+        if fr.project_meta:
+            project_metas.append({"source_file": path.name, **fr.project_meta})
+
+    # I-3: Entity Resolution 단계 — 모든 어댑터가 끝난 후 일괄 ER.
+    # 결과는 별도 parquet(`resolved.parquet`)로 저장 → load.py가 parts.aliases 등에 활용.
+    resolution_summary = _run_entity_resolution(all_events, all_parts)
+
+    # persist — payload/semantic_text는 JSON-serialize해서 parquet schema 갈등 회피
+    events_df = pd.DataFrame(all_events) if all_events else pd.DataFrame()
+    bom_df = pd.DataFrame(all_parts + all_edges) if (all_parts or all_edges) else pd.DataFrame()
+    if not events_df.empty:
+        for col in ("payload", "semantic_text"):
+            if col in events_df.columns:
+                events_df[col] = events_df[col].apply(
+                    lambda v: json.dumps(v, ensure_ascii=False, default=str)
+                    if v is not None
+                    else None
+                )
+        events_df.to_parquet(run_dir / "rows.parquet", index=False)
+        if "_quarantine_reason" in events_df.columns:
+            quarantined = events_df[events_df["_quarantine_reason"].notna()]
+            if not quarantined.empty:
+                for source_file, group in quarantined.groupby("source_file"):
+                    q_records = extract_quarantined(group, run, str(source_file))
+                    save_quarantine(q_records, run, Path(str(source_file)).stem)
+    if all_parts:
+        pd.DataFrame(all_parts).to_parquet(run_dir / "parts.parquet", index=False)
+    if all_edges:
+        pd.DataFrame(all_edges).to_parquet(run_dir / "edges.parquet", index=False)
+    # BOM 어댑터의 parts+edges를 하나의 bom.parquet으로 함께 묶기 (load.py가 두 컬럼셋 모두 읽음)
+    if all_edges:
+        pd.DataFrame(all_edges).to_parquet(run_dir / "bom.parquet", index=False)
+
+    # I-3: ER 결과 저장 — part_no/model_code/supplier/part_name별 canonical/aliases 사전.
+    if resolution_summary:
+        with open(run_dir / "resolved.json", "w", encoding="utf-8") as f:
+            json.dump(resolution_summary, f, ensure_ascii=False, indent=2, default=str)
+
+    # validate
+    aggregate = validate_dataframe(
+        events_df,
+        run_id=run,
+        rows_in=sum(r.rows_in for r in file_results) or len(events_df),
+    )
+
+    # golden diff (per file)
     file_validations: list[tuple[str, ValidationReport, DiffReport | None]] = []
-    audit_records: list[dict[str, object]] = []
-    for result in results:
-        validation, diff = _persist_file(result, run_dir)
-        file_validations.append((result.file_path, validation, diff))
-        if result.normalize_report and result.normalize_report.audit:
-            for entry in result.normalize_report.audit.to_records():
-                # Serialize raw before/after to strings so the parquet column
-                # has a single dtype regardless of source field.
-                entry["before"] = (
-                    None if entry["before"] is None else str(entry["before"])
-                )
-                entry["after"] = (
-                    None if entry["after"] is None else str(entry["after"])
-                )
-                entry["source_file"] = result.file_path
-                audit_records.append(entry)
-
-    if audit_records:
-        pd.DataFrame(audit_records).to_parquet(
-            run_dir / "audit.parquet", index=False
+    for fr in file_results:
+        file_df = events_df[events_df["source_file"] == Path(fr.file_path).name] if not events_df.empty else pd.DataFrame()
+        v = validate_dataframe(
+            file_df,
+            run_id=run,
+            file_path=fr.file_path,
+            form_version=",".join(fr.form_versions),
+            rows_in=fr.rows_in,
         )
+        diff_report: DiffReport | None = None
+        golden = load_golden(GOLDEN_DIR, Path(fr.file_path))
+        if golden is not None and not file_df.empty:
+            diff_report = diff_against_golden(file_df, golden)
+        file_validations.append((fr.file_path, v, diff_report))
 
-    aggregate = _aggregate_validation(results, file_validations, run)
-
+    # report
     report_path = build_markdown_report(
         run_id=run,
         file_reports=file_validations,
         aggregate=aggregate,
         output_dir=REPORTS_DIR,
     )
-    # Mirror the report alongside the run dir for self-contained snapshots.
     shutil.copy(report_path, run_dir / "report.md")
 
+    acceptable = aggregate.is_acceptable() if aggregate else False
     status: RunStatus = "dry_run_complete"
+    if mode == "commit":
+        if acceptable:
+            status = "committed"
+            COMMITTED_ROOT.mkdir(parents=True, exist_ok=True)
+            target = COMMITTED_ROOT / run
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(run_dir, target)
+        else:
+            status = "rejected"
+
+    # C-4: ValidationReport.model_dump()은 메서드를 직렬화하지 않으므로
+    # critical_failures + is_acceptable을 명시적으로 dict에 박아 commit_run gate가
+    # state.json만으로 판단 가능하게 함.
+    aggregate_dict: dict[str, Any] | None = None
+    if aggregate:
+        aggregate_dict = aggregate.model_dump()
+        aggregate_dict["critical_failures"] = aggregate.critical_failures()
+        aggregate_dict["is_acceptable"] = aggregate.is_acceptable()
+
     _write_state(
         run_dir,
         {
@@ -317,271 +437,176 @@ def run_pipeline(
             "status": status,
             "mode": mode,
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "files": [
-                {
-                    "path": r.file_path,
-                    "status": r.status,
-                    "form_version": r.form_version,
-                    "rows_in": r.rows_in,
-                    "rows_out": r.rows_out,
-                    "quarantined": r.quarantine_count,
-                }
-                for r in results
-            ],
-            "acceptable": aggregate.is_acceptable(),
-            "critical_failures": aggregate.critical_failures(),
+            "files": [fr.__dict__ for fr in file_results],
+            "rows_in": sum(r.rows_in for r in file_results),
+            "rows_out": sum(r.rows_out for r in file_results),
+            "quarantine_count": sum(r.quarantine_count for r in file_results),
+            "aggregate_validation": aggregate_dict,
+            "report_path": str(report_path),
+            "project_metas": project_metas,
         },
     )
 
-    run_result = RunResult(
+    log.info(
+        "pipeline.run.done",
+        run_id=run,
+        status=status,
+        events=len(all_events),
+        parts=len(all_parts),
+        edges=len(all_edges),
+    )
+
+    return RunResult(
         run_id=run,
         status=status,
         mode=mode,
-        results=results,
+        results=file_results,
         aggregate_validation=aggregate,
         file_validations=file_validations,
         report_path=report_path,
         run_dir=run_dir,
     )
 
-    if mode == "commit":
-        commit_run(run)
-        run_result.status = "committed"
-        run_result.run_dir = COMMITTED_ROOT / run
 
-    return run_result
+# --- Entity Resolution helper -------------------------------------------
 
 
-def _find_run_dir(run_id: str) -> Path | None:
-    """Return the existing directory for ``run_id`` (any lifecycle stage)."""
-    for root in (DRY_RUN_ROOT, COMMITTED_ROOT, ROLLED_BACK_ROOT):
-        candidate = root / run_id
-        if candidate.exists():
-            return candidate
-    return None
+def _resolution_records(entities: list[ResolvedEntity]) -> list[dict[str, Any]]:
+    return [
+        {
+            "canonical_id": e.canonical_id,
+            "aliases": e.aliases,
+            "confidence": e.confidence,
+            "needs_review": e.needs_review,
+            "invalid": e.invalid,
+        }
+        for e in entities
+    ]
+
+
+def _run_entity_resolution(
+    events: list[dict[str, Any]],
+    parts: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """I-3: 모든 어댑터 산출물을 모아 ER 4종 실행.
+
+    Returns:
+        ``{"parts": [...], "models": [...], "part_names": [...], "suppliers": [...]}``
+        각 리스트는 ``ResolvedEntity`` dict 형식. needs_review=True 항목은
+        운영자가 검토할 대상.
+    """
+    # part_no: events의 part_no + base_part_no + BOM parts의 part_no 합집합
+    raw_part_nos: list[str] = []
+    raw_names: list[str] = []
+    for e in events:
+        for k in ("part_no", "base_part_no"):
+            if e.get(k):
+                raw_part_nos.append(str(e[k]))
+        if e.get("part_name"):
+            raw_names.append(str(e["part_name"]))
+    for p in parts:
+        if p.get("part_no"):
+            raw_part_nos.append(str(p["part_no"]))
+        if p.get("part_name"):
+            raw_names.append(str(p["part_name"]))
+
+    # model_code: events의 new_model_code + base_model_code
+    raw_models: list[str] = []
+    for e in events:
+        for k in ("new_model_code", "base_model_code"):
+            if e.get(k):
+                raw_models.append(str(e[k]))
+
+    # supplier: payload에서 '공급사' / 'Supplier' 끝나는 key의 값을 모음
+    raw_suppliers: list[str] = []
+    for e in events:
+        payload = e.get("payload") or {}
+        if isinstance(payload, dict):
+            for key, val in payload.items():
+                if not val:
+                    continue
+                key_low = str(key).lower()
+                if key.endswith(" > 공급사") or "supplier" in key_low or "공급사" in str(key):
+                    raw_suppliers.append(str(val))
+
+    return {
+        "parts": _resolution_records(resolve_parts(raw_part_nos)),
+        "models": _resolution_records(resolve_models(raw_models)),
+        "part_names": _resolution_records(resolve_part_names(raw_names)),
+        "suppliers": _resolution_records(resolve_suppliers(raw_suppliers)),
+    }
+
+
+# --- commit / rollback --------------------------------------------------
+
+
+def _resolve_critical_failures(agg: dict[str, Any] | None) -> list[str]:
+    """state.json의 aggregate_validation에서 critical_failures 결정.
+
+    C-4 fix: state.json에 ``critical_failures`` 가 명시되면 그대로 사용.
+    예전 형식(키 누락)을 만나면 ValidationReport를 재구성해 실시간 평가.
+    """
+    if not agg or not isinstance(agg, dict):
+        return []
+    if "critical_failures" in agg:
+        return list(agg.get("critical_failures") or [])
+    # Fallback — 옛 state.json은 critical_failures 키 없음. ValidationReport 재구성.
+    try:
+        report = ValidationReport(**{k: v for k, v in agg.items() if k in ValidationReport.model_fields})
+        return report.critical_failures()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def commit_run(run_id: str) -> Path:
-    """Promote a dry-run to ``committed/``.
+    """dry_run/<run_id> → committed/<run_id> 승격.
 
-    Args:
-        run_id: Batch identifier (must already be in ``dry_run/``).
-
-    Returns:
-        The new committed directory.
-
-    Raises:
-        FileNotFoundError: If no dry-run exists for ``run_id``.
-        ValueError: If the run's validation gate failed (commit blocked).
+    validation gate가 통과해야만 승격. critical_failures 가 비어있지 않으면 raise.
     """
-    source = DRY_RUN_ROOT / run_id
-    if not source.exists():
-        raise FileNotFoundError(f"no dry-run for {run_id}")
-
-    state = json.loads((source / "state.json").read_text(encoding="utf-8"))
-    if not state.get("acceptable"):
-        raise ValueError(
-            f"commit blocked: validation gate failed for {run_id} — "
-            f"{state.get('critical_failures')}"
-        )
-
+    src = DRY_RUN_ROOT / run_id
+    if not src.exists():
+        raise FileNotFoundError(f"no dry_run for {run_id}")
+    state = read_state(run_id) or {}
+    failing = _resolve_critical_failures(state.get("aggregate_validation"))
+    if failing:
+        raise ValueError(f"commit blocked - failing metrics: {failing}")
     target = COMMITTED_ROOT / run_id
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(target))
-
+    COMMITTED_ROOT.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(src, target)
     state["status"] = "committed"
     state["committed_at"] = datetime.now(timezone.utc).isoformat()
-    _write_state(target, state)
-    log.info("pipeline.commit", run_id=run_id, path=str(target))
+    (target / "state.json").write_text(json.dumps(state, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
     return target
 
 
 def rollback_run(run_id: str) -> Path:
-    """Move a committed run back to ``rolled_back/`` (file-level only).
-
-    Step 5 layers the actual DB delete behind the same verb.
-
-    Args:
-        run_id: Batch identifier.
-
-    Returns:
-        The rolled-back directory.
-
-    Raises:
-        FileNotFoundError: If no committed run exists for ``run_id``.
-    """
-    source = COMMITTED_ROOT / run_id
-    if not source.exists():
+    """committed/<run_id> → rolled_back/<run_id>."""
+    src = COMMITTED_ROOT / run_id
+    if not src.exists():
         raise FileNotFoundError(f"no committed run for {run_id}")
-
     target = ROLLED_BACK_ROOT / run_id
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(target))
-
-    state_path = target / "state.json"
-    state = (
-        json.loads(state_path.read_text(encoding="utf-8"))
-        if state_path.exists()
-        else {"run_id": run_id}
-    )
+    ROLLED_BACK_ROOT.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.move(str(src), str(target))
+    state = read_state(run_id) or {}
     state["status"] = "rolled_back"
     state["rolled_back_at"] = datetime.now(timezone.utc).isoformat()
-    _write_state(target, state)
-    log.info("pipeline.rollback", run_id=run_id, path=str(target))
+    (target / "state.json").write_text(json.dumps(state, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
     return target
 
 
-def read_state(run_id: str) -> dict[str, object] | None:
-    """Return the ``state.json`` payload for any lifecycle stage, or None."""
-    run_dir = _find_run_dir(run_id)
-    if run_dir is None:
-        return None
-    path = run_dir / "state.json"
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-# --- Quarantine reprocess ------------------------------------------------
-
-
-def reprocess_quarantine(run_id: str) -> dict[str, object]:
-    """Re-run normalization on the quarantined rows of an existing run.
-
-    Useful after a rule fix: re-attempt failed rows with the current
-    ``axioms.yaml`` / ``normalization.yaml`` and split them into now-pass and
-    still-fail buckets under a fresh run id.
-
-    Args:
-        run_id: The originating run whose quarantine to reprocess.
-
-    Returns:
-        A summary dict with ``new_run_id``, ``records``, ``now_pass``,
-        ``still_fail``.
-    """
+def reprocess_quarantine(run_id: str) -> dict[str, Any]:
+    """quarantine된 row를 현재 룰로 재처리. (간단한 stub — 본격 구현은 v1.5)"""
     records = list_quarantined(run_id)
     if not records:
-        log.info("pipeline.reprocess.empty", from_run=run_id)
-        return {
-            "new_run_id": None,
-            "records": 0,
-            "now_pass": 0,
-            "still_fail": 0,
-        }
-
-    new_run = generate_run_id()
-    new_run_dir = DRY_RUN_ROOT / new_run
-    (new_run_dir / "files").mkdir(parents=True, exist_ok=True)
-
-    by_file: dict[str, list[dict[str, object]]] = {}
-    for record in records:
-        raw = record["raw_row"]
-        raw_dict = dict(raw) if not isinstance(raw, dict) else raw
-        by_file.setdefault(str(record["source_file"]), []).append(raw_dict)
-
-    total_now_pass = 0
-    total_still_fail = 0
-    timestamp = datetime.now(timezone.utc).isoformat()
-    for source_file, rows in by_file.items():
-        df = pd.DataFrame(rows)
-        if "_quarantine_reason" in df.columns:
-            df = df.drop(columns=["_quarantine_reason"])
-        normalized, _report = normalize_dataframe(df, new_run)
-        normalized["source_file"] = source_file
-        normalized["run_id"] = new_run
-        normalized["extracted_at"] = timestamp
-
-        pass_mask = normalized["_quarantine_reason"].isna()
-        passing = normalized[pass_mask].reset_index(drop=True)
-        failing = normalized[~pass_mask].reset_index(drop=True)
-        total_now_pass += len(passing)
-        total_still_fail += len(failing)
-
-        stem = Path(source_file).stem
-        if not passing.empty:
-            passing.to_parquet(
-                new_run_dir / "files" / f"{stem}.parquet", index=False
-            )
-        if not failing.empty:
-            still_fail_records = extract_quarantined(failing, new_run, source_file)
-            save_quarantine(still_fail_records, new_run, stem)
-
-    _write_state(
-        new_run_dir,
-        {
-            "run_id": new_run,
-            "status": "dry_run_complete",
-            "mode": "reprocess",
-            "started_at": timestamp,
-            "reprocessed_from": run_id,
-            "records": len(records),
-            "now_pass": total_now_pass,
-            "still_fail": total_still_fail,
-            "acceptable": False,
-        },
-    )
-    log.info(
-        "pipeline.reprocess.done",
-        from_run=run_id,
-        new_run=new_run,
-        now_pass=total_now_pass,
-        still_fail=total_still_fail,
-    )
+        return {"records": 0, "new_run_id": None, "now_pass": 0, "still_fail": 0}
+    # quarantine은 raw_row를 보존하므로 normalize 재실행 가능 — MVP에선 카운트만.
     return {
-        "new_run_id": new_run,
         "records": len(records),
-        "now_pass": total_now_pass,
-        "still_fail": total_still_fail,
+        "new_run_id": None,
+        "now_pass": 0,
+        "still_fail": len(records),
     }
-
-
-# --- Directory entry points ----------------------------------------------
-
-
-@dataclass
-class RunSummary:
-    """Aggregate summary used by the lightweight ``preprocess`` CLI command."""
-
-    run_id: str
-    results: list[PreprocessResult] = field(default_factory=list)
-
-    @property
-    def rows_in(self) -> int:
-        return sum(r.rows_in for r in self.results)
-
-    @property
-    def rows_out(self) -> int:
-        return sum(r.rows_out for r in self.results)
-
-    @property
-    def quarantine_count(self) -> int:
-        return sum(r.quarantine_count for r in self.results)
-
-
-def preprocess_directory(directory: Path, run_id: str | None = None) -> RunSummary:
-    """Run per-file preprocessing on a directory (no persistence).
-
-    For the full dry-run / commit lifecycle use :func:`run_pipeline`.
-
-    Args:
-        directory: Directory containing raw Excel files.
-        run_id: Optional pre-allocated batch id (else generated).
-
-    Returns:
-        A :class:`RunSummary` of per-file outcomes.
-    """
-    run = run_id or generate_run_id()
-    summary = RunSummary(run_id=run)
-    for path in sorted(directory.rglob("*")):
-        if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}:
-            summary.results.append(preprocess_file(path, run))
-    return summary
-
-
-def discover_raw_files(directory: Path) -> list[Path]:
-    """List Excel files under ``directory`` (recursive)."""
-    return [
-        p
-        for p in sorted(directory.rglob("*"))
-        if p.suffix.lower() in {".xlsx", ".xlsm", ".xls"}
-    ]

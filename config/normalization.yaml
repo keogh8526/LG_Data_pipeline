@@ -1,27 +1,31 @@
-# Step 3 — per-field value normalization rules.
+# v2.0 Step 3 — 필드별 차등 정규화 규칙 (preprocessing_v2.md §3 Step 3).
 #
-# Each field declares a sequence of deterministic steps. Steps:
-#   strip                                      remove leading/trailing whitespace
-#   upper / lower                              case fold
-#   unicode_normalize  (form: NFC|NFKC|...)    Unicode normalization form
-#   collapse_whitespace                        collapse runs of whitespace to one
-#   regex_remove       (pattern: ...)          delete matches
-#   max_length         (value: int)            truncate at length
-#   cast               (to: int|float|str)     type cast
-#   range_check        (min: ..., max: ...)    numeric range
-#   map_alias          (field: <axiom_key>)    alias normalization via axioms
+# 원칙:
+#   - 모든 텍스트에 NFC 1차 적용 (macOS 자모분리 복원)
+#   - 식별자 필드(part_no/model_code/buyer_code/grade)에 NFKC (전각/반각 통일)
+#   - 자유텍스트(change_point/change_reason/drbfm_note)에 NFC만 (의미 보존)
 #
-# post_validate references an axiom key (e.g. ``part_no``) — the field value
-# must pass the matching ``validate_*`` function.
+# Step 종류:
+#   unicode_normalize  (form: NFC|NFKC|NFD|NFKD)  유니코드 정규화
+#   strip                                          앞뒤 공백 제거
+#   upper / lower                                  대소문자
+#   collapse_whitespace                            다중 공백 → 단일
+#   regex_remove       (pattern: ...)              매치 삭제
+#   max_length         (value: int)                길이 제한
+#   cast               (to: int|float|str)         타입 강제
+#   range_check        (min: ..., max: ...)        수치 범위
+#   map_alias          (field: <axiom_key>)        axiom alias 해소
+#   null_token_to_none                             ""/-/N/A → None
 #
-# on_fail policy when a step / post_validate fails:
-#   quarantine  -> record the row for human review (default)
-#   truncate    -> clamp to the limit / max_length window (for max_length, range_check)
-#   set_null    -> drop the value to NULL and continue
+# post_validate: axiom key 참조 (대응 validate_* 함수가 통과 필요)
+# on_fail: quarantine | truncate | set_null
 
 fields:
+  # ── 식별자 ── NFC → NFKC, upper, 공백/하이픈/언더스코어 제거
   part_no:
     steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: unicode_normalize, form: NFKC}
       - {type: strip}
       - {type: upper}
@@ -29,35 +33,81 @@ fields:
     post_validate: part_no
     on_fail: quarantine
 
-  model_code:
+  base_part_no:
     steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: upper}
+      - {type: regex_remove, pattern: '[\s\-_]'}
+    post_validate: part_no
+    on_fail: set_null  # base_part_no는 옵셔널이므로 실패 시 null 처리
+
+  new_model_code:
+    steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: unicode_normalize, form: NFKC}
       - {type: strip}
       - {type: upper}
     post_validate: model_code
     on_fail: quarantine
 
-  bom_level:
+  base_model_code:
     steps:
-      - {type: cast, to: int}
-      - {type: range_check, min: 0, max: 10}
-    on_fail: quarantine
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
+      - {type: unicode_normalize, form: NFKC}
+      - {type: strip}
+      - {type: upper}
+    on_fail: set_null
 
+  # ── Enum / 사전 매핑 ──
   change_type:
     steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: strip}
       - {type: map_alias, field: change_type}
     on_fail: quarantine
 
   grade:
     steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: strip}
       - {type: map_alias, field: grade}
-    on_fail: quarantine
+    on_fail: set_null   # 매핑 실패 시 None → Pydantic _normalize_grade가 'unknown'으로 변환
 
+  part_type:
+    steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
+      - {type: strip}
+    on_fail: set_null
+
+  event_stage:
+    steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
+      - {type: strip}
+      - {type: upper}
+    on_fail: set_null
+
+  region:
+    steps:
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
+      - {type: strip}
+      - {type: upper}
+    on_fail: set_null
+
+  # ── 자유텍스트 ── NFC만, NFKC 안 함 (한국어 의미 보존)
   change_point:
     steps:
-      - {type: unicode_normalize, form: NFKC}
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: strip}
       - {type: collapse_whitespace}
       - {type: max_length, value: 2000}
@@ -65,7 +115,8 @@ fields:
 
   change_reason:
     steps:
-      - {type: unicode_normalize, form: NFKC}
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: strip}
       - {type: collapse_whitespace}
       - {type: max_length, value: 2000}
@@ -73,20 +124,22 @@ fields:
 
   part_name:
     steps:
-      - {type: unicode_normalize, form: NFKC}
+      - {type: null_token_to_none}
+      - {type: unicode_normalize, form: NFC}
       - {type: strip}
       - {type: collapse_whitespace}
       - {type: max_length, value: 200}
     on_fail: truncate
 
-  part_type:
+  # ── 수치 ──
+  bom_level:
     steps:
-      - {type: unicode_normalize, form: NFKC}
-      - {type: strip}
+      - {type: cast, to: int}
+      - {type: range_check, min: 0, max: 10}
     on_fail: set_null
 
   qty:
     steps:
       - {type: cast, to: float}
-      - {type: range_check, min: 0, max: 9999}
-    on_fail: quarantine
+      - {type: range_check, min: 0, max: 99999}
+    on_fail: set_null
