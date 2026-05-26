@@ -50,6 +50,11 @@ class Hit:
     form_id: str | None
     file_id: int
     embedding_text: str | None
+    # D-012: BOM Agent UI (generate_proposals_from_docs)가 RSN/CHG 태그
+    # 매칭에 사용. retrieve 결과에서 raw 변경점/사유 그대로 노출.
+    part_no_base: str | None = None
+    change_point_raw: str | None = None
+    change_reason_raw: str | None = None
 
     # 점수 (모달리티별, 없으면 None)
     score_semantic: float | None = None  # 1 - cosine_distance, 0~1
@@ -110,6 +115,9 @@ def _row_to_hit(row: Any, **score_kwargs: Any) -> Hit:
         form_id=row.form_id,
         file_id=row.file_id,
         embedding_text=row.embedding_text,
+        part_no_base=getattr(row, "part_no_base", None),
+        change_point_raw=getattr(row, "change_point_raw", None),
+        change_reason_raw=getattr(row, "change_reason_raw", None),
         **score_kwargs,
     )
 
@@ -160,8 +168,9 @@ def semantic_search(
 
     sql = text(
         f"""
-        SELECT doc_id, part_no_new, part_name, new_model, event, region,
+        SELECT doc_id, part_no_new, part_no_base, part_name, new_model, event, region,
                form_id, file_id, embedding_text,
+               change_point_raw, change_reason_raw,
                1 - (embedding_dense <=> CAST(:v AS vector)) AS score
         FROM dev_part_master
         WHERE embedding_dense IS NOT NULL{flt_sql}
@@ -209,8 +218,9 @@ def lexical_search(
     # `<%`(left-arg-word-sim) 연산자로 prefilter, similarity 정렬에 사용.
     sql = text(
         f"""
-        SELECT doc_id, part_no_new, part_name, new_model, event, region,
+        SELECT doc_id, part_no_new, part_no_base, part_name, new_model, event, region,
                form_id, file_id, embedding_text,
+               change_point_raw, change_reason_raw,
                word_similarity(:q, embedding_text) AS score
         FROM dev_part_master
         WHERE embedding_text IS NOT NULL
