@@ -28,3 +28,5 @@ CREATE INDEX IF NOT EXISTS idx_ce_narrative_emb
 -- Trigram 인덱스 (lexical / ILIKE 가속)
 CREATE INDEX IF NOT EXISTS idx_ce_narrative_trgm
     ON change_events USING gin (narrative_text gin_trgm_ops);
+
+-- D-011 Phase C: parts.description_embedding 컬럼 제거 (BOM Agent가 미사용).

@@ -257,50 +257,17 @@ class PreprocessingRun(Base):
     notes: Mapped[str | None] = mapped_column(Text, default=None)
 
 
-# ── Form Versions ───────────────────────────────────────────────────
-
-
-class FormVersion(Base):
-    """양식 진화 이력 (변경부품_list_91 → 97 등)."""
-
-    __tablename__ = "form_versions"
-
-    version: Mapped[str] = mapped_column(String(30), primary_key=True)
-    released_at: Mapped[str | None] = mapped_column(Date, default=None)
-    description: Mapped[str | None] = mapped_column(Text, default=None)
-    column_count: Mapped[int | None] = mapped_column(Integer, default=None)
-    superseded_by: Mapped[str | None] = mapped_column(
-        String(30), ForeignKey("form_versions.version"), default=None
-    )
-
-
-# ── Needs Review Queue ──────────────────────────────────────────────
-
-
-class NeedsReview(Base):
-    """사람 검토 큐 — ER 0.85, unknown form, axiom violation 등."""
-
-    __tablename__ = "needs_review_queue"
-
-    review_id: Mapped[uuid.UUID] = _uuid_pk()
-    event_id = _uuid_fk("change_events.event_id")
-    reason: Mapped[str | None] = mapped_column(Text, default=None)
-    suggested: Mapped[dict | None] = mapped_column(_JSONB, default=None)
-    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
-    resolved_by: Mapped[str | None] = mapped_column(Text, default=None)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    run_id: Mapped[str | None] = mapped_column(String(36), index=True, default=None)
+# D-011 Phase C: FormVersion + NeedsReview 테이블 삭제.
+#   - FormVersion: 양식 진화 추적은 form_signatures.yaml 단독으로 충분.
+#   - NeedsReview: 3-band ER 제거되며 사람 검토 큐도 미사용.
 
 
 __all__ = [
     "Base",
     "BomEdge",
     "ChangeEvent",
-    "FormVersion",
     "Model",
-    "NeedsReview",
     "Part",
     "PreprocessingRun",
 ]
-# 참고: TestPlan / HsmsRecord 제거 (Phase A, D-011). FormVersion / NeedsReview는 Phase C에서 제거.
+# 5 테이블: parts / models / bom_edges / change_events / preprocessing_runs.

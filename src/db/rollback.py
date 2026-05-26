@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from src.db.models import (
     BomEdge,
     ChangeEvent,
-    NeedsReview,
     PreprocessingRun,
 )
 from src.utils.logging import get_logger
@@ -45,9 +44,8 @@ def rollback_run(session: Session, run_id: str) -> RollbackResult:
         raise ValueError(f"unknown run: {run_id}")
 
     deleted: dict[str, int] = {}
-    # FK 의존성 역순 삭제 (test_plans / hsms_records는 D-011로 제거됨).
+    # FK 의존성 역순 삭제 (D-011 Phase A/C로 test_plans/hsms/needs_review 제거).
     for label, model_cls in (
-        ("needs_review_queue", NeedsReview),
         ("change_events", ChangeEvent),
         ("bom_edges", BomEdge),
     ):

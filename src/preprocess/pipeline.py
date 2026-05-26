@@ -46,13 +46,7 @@ from src.preprocess.quarantine import (
     save_quarantine,
 )
 from src.preprocess.report import build_markdown_report
-from src.preprocess.resolve import (
-    ResolvedEntity,
-    resolve_models,
-    resolve_part_names,
-    resolve_parts,
-    resolve_suppliers,
-)
+from src.preprocess.resolve import resolve_models, resolve_parts
 from src.preprocess.validate import ValidationReport, validate_dataframe
 from src.utils.excel import read_workbook
 from src.utils.logging import get_logger
@@ -465,72 +459,39 @@ def run_pipeline(
     )
 
 
-# --- Entity Resolution helper -------------------------------------------
-
-
-def _resolution_records(entities: list[ResolvedEntity]) -> list[dict[str, Any]]:
-    return [
-        {
-            "canonical_id": e.canonical_id,
-            "aliases": e.aliases,
-            "confidence": e.confidence,
-            "needs_review": e.needs_review,
-            "invalid": e.invalid,
-        }
-        for e in entities
-    ]
+# --- Entity Resolution helper (D-011 Phase C: 단순화) ------------------
 
 
 def _run_entity_resolution(
     events: list[dict[str, Any]],
     parts: list[dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    """I-3: 모든 어댑터 산출물을 모아 ER 4종 실행.
+) -> dict[str, list[str]]:
+    """D-011: ER 단순화 — parts/models canonical_id 집합만 반환.
+
+    이전 4종 (parts/models/part_names/suppliers) 3-band 분류는 제거.
+    fuzzy 매칭이 필요해지면 별도 모듈로 재도입.
 
     Returns:
-        ``{"parts": [...], "models": [...], "part_names": [...], "suppliers": [...]}``
-        각 리스트는 ``ResolvedEntity`` dict 형식. needs_review=True 항목은
-        운영자가 검토할 대상.
+        ``{"parts": [...], "models": [...]}`` — 각 canonical_id list.
     """
-    # part_no: events의 part_no + base_part_no + BOM parts의 part_no 합집합
     raw_part_nos: list[str] = []
-    raw_names: list[str] = []
     for e in events:
         for k in ("part_no", "base_part_no"):
             if e.get(k):
                 raw_part_nos.append(str(e[k]))
-        if e.get("part_name"):
-            raw_names.append(str(e["part_name"]))
     for p in parts:
         if p.get("part_no"):
             raw_part_nos.append(str(p["part_no"]))
-        if p.get("part_name"):
-            raw_names.append(str(p["part_name"]))
 
-    # model_code: events의 new_model_code + base_model_code
     raw_models: list[str] = []
     for e in events:
         for k in ("new_model_code", "base_model_code"):
             if e.get(k):
                 raw_models.append(str(e[k]))
 
-    # supplier: payload에서 '공급사' / 'Supplier' 끝나는 key의 값을 모음
-    raw_suppliers: list[str] = []
-    for e in events:
-        payload = e.get("payload") or {}
-        if isinstance(payload, dict):
-            for key, val in payload.items():
-                if not val:
-                    continue
-                key_low = str(key).lower()
-                if key.endswith(" > 공급사") or "supplier" in key_low or "공급사" in str(key):
-                    raw_suppliers.append(str(val))
-
     return {
-        "parts": _resolution_records(resolve_parts(raw_part_nos)),
-        "models": _resolution_records(resolve_models(raw_models)),
-        "part_names": _resolution_records(resolve_part_names(raw_names)),
-        "suppliers": _resolution_records(resolve_suppliers(raw_suppliers)),
+        "parts": sorted(resolve_parts(raw_part_nos)),
+        "models": sorted(resolve_models(raw_models)),
     }
 
 

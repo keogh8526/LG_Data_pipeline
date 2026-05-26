@@ -78,15 +78,18 @@ def test_state_json_has_critical_failures_key(isolated_data, fixture_workbooks):
 
 
 def test_pipeline_writes_resolved_json(isolated_data, fixture_workbooks):
-    """run_pipeline 후 dry_run/<id>/resolved.json이 존재 + 4종 분류 포함."""
+    """run_pipeline 후 dry_run/<id>/resolved.json이 존재 + parts/models 포함.
+
+    D-011 Phase C: ER 단순화 후 parts/models 2종만 (이전 part_names/suppliers는 제거).
+    """
     import json
 
     only = [fixture_workbooks / "fixture_changing_parts_96.xlsx"]
     result = run_pipeline(only, mode="dry-run")
     resolved_path = result.run_dir / "resolved.json"
-    assert resolved_path.exists(), "resolved.json must be written by pipeline (I-3)"
+    assert resolved_path.exists(), "resolved.json must be written by pipeline"
     data = json.loads(resolved_path.read_text(encoding="utf-8"))
-    for key in ("parts", "models", "part_names", "suppliers"):
+    for key in ("parts", "models"):
         assert key in data, f"resolved.json missing '{key}' section"
 
 

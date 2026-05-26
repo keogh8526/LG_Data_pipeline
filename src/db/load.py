@@ -265,11 +265,10 @@ def _apply_resolution(
     parts: dict[str, Part],
     models: dict[str, Model],
 ) -> None:
-    """I-3: ``resolved.json``의 ER 결과를 parts/models에 반영.
+    """D-011 (C): ``resolved.json``의 단순 ER 결과 적용.
 
-    - parts: aliases 컬럼 채움
-    - models: 현재는 alias 컬럼이 ORM에 없어 grade/region만 보강 (auto_merge ≥ 0.95).
-    파일 없으면 no-op.
+    이전 3-band fuzzy alias 매칭은 제거. 현재는 parts.aliases 컬럼이 사용되지
+    않으므로 no-op에 가깝지만, resolved.json의 부재만 graceful 처리.
     """
     path = run_dir / RESOLVED_FILE
     if not path.exists():
@@ -280,17 +279,10 @@ def _apply_resolution(
         log.warning("db.load.resolved_unreadable", error=str(exc))
         return
 
-    for record in data.get("parts", []):
-        canonical = record.get("canonical_id")
-        if canonical and canonical in parts:
-            aliases = [a for a in record.get("aliases") or [] if a != canonical]
-            if aliases:
-                parts[canonical].aliases = aliases
-
     log.info(
         "db.load.resolved_applied",
-        parts_with_aliases=sum(1 for p in parts.values() if p.aliases),
-        models=len(models),
+        parts=len(data.get("parts", [])),
+        models=len(data.get("models", [])),
     )
 
 
