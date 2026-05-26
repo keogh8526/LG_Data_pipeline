@@ -473,9 +473,12 @@ def unwrap_rag_json(doc_text: str) -> dict | None:
 # - 기존 get_collection() 컬렉션과 완전히 분리
 # =========================================================
 STRUCTURED_DB_DIR = str(Path(__file__).resolve().parent / "chroma_structured")
-# D-012: v3 → v4. v3은 default(onnx) embedder로 만들어져 Windows에서 [Errno 22]
-# 유발. v4은 우리 bge-m3 임베딩을 직접 전달하는 새 컬렉션.
-STRUCTURED_COLLECTION_NAME = "bom_structured_v4"
+# D-012: v3 → v4 → v5.
+#   v3: default(onnx) embedder → Windows [Errno 22]
+#   v4: bge-m3 OK, but doc text 형식이 generate_proposals_from_docs의
+#       '[L1]' 마커 expectation과 mismatch → proposals 0건
+#   v5: build_structured_docs_from_base가 [L1] / '- ' 형식으로 출력
+STRUCTURED_COLLECTION_NAME = "bom_structured_v5"
 
 # ── Chroma 클라이언트 캐싱 ──
 _STRUCT_CLIENT = None
@@ -1029,15 +1032,23 @@ def build_structured_docs_from_base(df_base: pd.DataFrame, model: str, dev_grade
             "review_points": [],
         }
 
+        # D-012 fix: generate_proposals_from_docs는 doc text에 '[L1]' 마커가
+        # 있어야 부품 파싱을 시작 (app.py line 3769). 부품 라인은 '-'로 시작.
+        # 원본 doc_packaging.make_index_docs_l1_chunks가 만들던 형식과 정합.
         embedding_text = (
+            f"[SRC] runtime_bom | {model}\n"
+            f"[MODEL] {model}\n"
+            f"[GRADE] {dev_grade}\n"
+            f"[DOMAIN] M\n"
+            f"[L1] {(pno or 'NOPNO')} | Desc={desc[:80]}\n"
+            f"- {bom_path} | Base= New={pno} | {desc[:80]}"
+            + (f" | FEATURE={feature}" if feature else "")
+            + (f" | TYPE={ptype}" if ptype else "")
+            + "\n"
+            # 검색용 보조 키워드 (의미 검색에 도움)
             f"OBJECT: {level1}\n"
-            f"FEATURE: {feature}\n"
-            f"BOM_PATH: {bom_path}\n"
             f"PART_NAME: {desc}\n"
             f"PART_NO: {pno}\n"
-            f"TYPE: {ptype}\n"
-            f"MODEL: {model}\n"
-            f"GRADE: {dev_grade}\n"
         )
         rag_obj["embedding_text"] = embedding_text
 
@@ -5988,10 +5999,34 @@ with st.container():
         step_sec["proposal"] = round(_time.perf_counter() - proposal_t0, 3)
 
         # D-012 fix: 디버그 사이드바가 볼 수 있게 session_state에 저장
-        ss["primary_docs"] = search_result.get("primary_docs") or []
-        ss["secondary_docs"] = search_result.get("secondary_docs") or []
+        _raw_primary = search_result.get("primary_docs") or []
+        _raw_secondary = search_result.get("secondary_docs") or []
+        _raw_sdbg = search_result.get("search_debug") or {}
+
+        # D-012 진단: stdout이 안 잡혀서 파일에 직접 append
+        try:
+            from pathlib import Path as _DbgPath
+            _dbg_path = _DbgPath(__file__).resolve().parent / "_dbg.log"
+            with open(_dbg_path, "a", encoding="utf-8") as _df:
+                from datetime import datetime as _Dt
+                _df.write(
+                    f"[{_Dt.now().isoformat(timespec='seconds')}] "
+                    f"primary_at_assign={len(_raw_primary)} "
+                    f"secondary_at_assign={len(_raw_secondary)} "
+                    f"proposals_at_assign={len(all_proposals or [])} "
+                    f"sdbg={_raw_sdbg}\n"
+                )
+        except Exception:
+            pass
+
+        ss["primary_docs"] = _raw_primary
+        ss["secondary_docs"] = _raw_secondary
         ss["proposals"] = all_proposals or []
-        ss["search_debug"] = search_result.get("search_debug") or {}
+        ss["search_debug"] = _raw_sdbg
+        # 진단용 — 저장 시점에 실제 list 길이를 별도 키로도 박아둠
+        ss["_dbg_primary_at_assign"] = len(_raw_primary)
+        ss["_dbg_secondary_at_assign"] = len(_raw_secondary)
+        ss["_dbg_proposals_at_assign"] = len(all_proposals or [])
 
         sdbg = search_result.get("search_debug") or {}
         timing_logs = [{

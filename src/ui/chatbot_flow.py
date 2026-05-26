@@ -316,6 +316,10 @@ def render_debug_sidebar():
     st.sidebar.write(f"primary_docs: {_safe_len(ss.get('primary_docs'))}")
     st.sidebar.write(f"secondary_docs: {_safe_len(ss.get('secondary_docs'))}")
     st.sidebar.write(f"proposals: {_safe_len(ss.get('proposals'))}")
+    # D-012 진단: 저장 시점의 raw len (mutation/reset 차이 추적용)
+    st.sidebar.write(f"primary_at_assign: {ss.get('_dbg_primary_at_assign', 'N/A')}")
+    st.sidebar.write(f"secondary_at_assign: {ss.get('_dbg_secondary_at_assign', 'N/A')}")
+    st.sidebar.write(f"proposals_at_assign: {ss.get('_dbg_proposals_at_assign', 'N/A')}")
     # D-012: run_search가 채워주는 search_debug 통째로 출력
     sdbg = ss.get("search_debug")
     if isinstance(sdbg, dict) and sdbg:
