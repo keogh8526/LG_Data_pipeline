@@ -305,6 +305,7 @@ def render_debug_sidebar():
         "dev_grade":       _safe(ss.get("dev_grade"), ""),
         "target_model":    _safe(ss.get("target_model"), ""),
         "ref_model":       _safe(ss.get("ref_model"), ""),
+        "region":          _safe(ss.get("region"), ""),
         "change_items":    _safe(ss.get("change_items"), []),
         "bom_model":       str(_safe(ss.get("bom_model"), "")),
         "bom_uploaded":    bool(ss.get("bom_uploaded") is True),
@@ -315,6 +316,16 @@ def render_debug_sidebar():
     st.sidebar.write(f"primary_docs: {_safe_len(ss.get('primary_docs'))}")
     st.sidebar.write(f"secondary_docs: {_safe_len(ss.get('secondary_docs'))}")
     st.sidebar.write(f"proposals: {_safe_len(ss.get('proposals'))}")
+    # D-012: run_search가 채워주는 search_debug 통째로 출력
+    sdbg = ss.get("search_debug")
+    if isinstance(sdbg, dict) and sdbg:
+        st.sidebar.markdown("**search_debug:**")
+        st.sidebar.json(sdbg)
+    # region 필터로 떨어진 카운트
+    rfl = ss.get("region_filter_last")
+    if isinstance(rfl, dict) and rfl:
+        st.sidebar.markdown("**region_filter_last:**")
+        st.sidebar.json(rfl)
     props = ss.get("proposals")
     if isinstance(props, list) and len(props) > 0:
         st.sidebar.markdown("**Proposals 상세:**")
@@ -331,5 +342,10 @@ def render_debug_sidebar():
         st.sidebar.write(f"- Legacy Chroma count: {legacy_cnt}")
     except Exception as e:
         st.sidebar.write(f"- Legacy Chroma error: {e}")
-    struct_cnt = st.session_state.get("_chroma_struct_count", 0)
+    # D-012: structured collection 실제 count
+    try:
+        from app import get_structured_collection
+        struct_cnt = get_structured_collection().count()
+    except Exception as e:
+        struct_cnt = f"ERR: {e}"
     st.sidebar.write(f"- Structured Chroma count: {struct_cnt}")
