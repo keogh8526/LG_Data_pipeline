@@ -5657,7 +5657,14 @@ with st.container():
 
     with row2_c2:
         target_val = st.session_state.get("target_model", "")
-        new_model = st.text_input("신규모델", value=target_val, key="_input_target_model", disabled=not fields_unlocked)
+        # D-012: 신규모델은 PPT 추출이 디자인 의도상 안 되므로 사용자 직접 입력.
+        # BOM 업로드만으로도 입력 가능하도록 PPT 확인 의존성 제거.
+        new_model = st.text_input(
+            "신규모델",
+            value=target_val,
+            key="_input_target_model",
+            placeholder="예: WSED7613B (선택 — 비워도 분석 가능)",
+        )
         st.session_state["target_model"] = new_model
 
     with row2_c3:
