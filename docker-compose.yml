@@ -23,6 +23,16 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    # D-012 GPU 가속 — NVIDIA Container Toolkit 또는 Docker Desktop WSL2 + GPU
+    # passthrough가 활성화된 머신에서만 동작. RTX 5070 Ti + driver 591.86 확인.
+    # GPU 없는 환경에선 본 section을 주석 처리하면 자동으로 CPU fallback.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/11434' || exit 1"]
       interval: 10s
