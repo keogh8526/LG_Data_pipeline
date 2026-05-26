@@ -239,6 +239,12 @@ if st.session_state.get("grade_locked"):
                 del st.session_state[_k]
         st.rerun()
 
+# D-012 fix: 원본 260508은 chatbot_flow의 사이드바 함수들을 import만 하고 호출 누락.
+# 사이드바에 개발등급 선택 + 디버그 토글이 안 보였던 원인. 여기서 명시적으로 호출.
+init_chat()                  # session_state 기본값 setup (멱등)
+render_grade_selector()      # 사이드바: 개발등급 selectbox
+render_debug_sidebar()       # 사이드바: 🧪 디버그 확인 토글 + search_debug 패널
+
 # =========================
 # Base Excel: header auto detect
 # =========================
@@ -5926,6 +5932,12 @@ with st.container():
         )
         all_proposals = merge_proposals_order_independent(proposals_raw)
         step_sec["proposal"] = round(_time.perf_counter() - proposal_t0, 3)
+
+        # D-012 fix: 디버그 사이드바가 볼 수 있게 session_state에 저장
+        ss["primary_docs"] = search_result.get("primary_docs") or []
+        ss["secondary_docs"] = search_result.get("secondary_docs") or []
+        ss["proposals"] = all_proposals or []
+        ss["search_debug"] = search_result.get("search_debug") or {}
 
         sdbg = search_result.get("search_debug") or {}
         timing_logs = [{
