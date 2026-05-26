@@ -175,3 +175,68 @@
   - 모델 코드/부품명 fuzzy 검색이 요청되면 → resolve.py에 3-band 재도입.
   - 벡터 1M+ 또는 query rerank 정확도 < 70% → multi-vector + bge-reranker
     재도입 검토.
+
+## D-012: 팀원 ETL_PG 스키마(dev_part_master)로 통합
+- 날짜: 2026-05-26
+- 컨텍스트: 팀에서 이미 운영 중인 ETL_PG와 데이터 모델을 통일하기로 결정.
+  D-011 후 우리 스키마(parts/models/bom_edges/change_events/preprocessing_runs
+  5 테이블, Core 13 + extra_fields)와 팀원 스키마(source_files/ingestion_log/
+  form_registry/dev_part_master 4 테이블)가 컬럼은 거의 같지만 이름이 다르고
+  배치 lifecycle도 우리는 run_id 단위, 팀원은 file_id 단위로 갈렸음.
+- 결정 — 7 Phase로 dev_part_master로 컷오버:
+  - **Phase 1** (스키마 정의): `src/db/schema_dev_part_master.sql` + Core 13 ↔
+    dpm 컬럼 매핑 `src/db/_mapping.py`. 4 테이블 + form_registry seed.
+  - **Phase 2** (ORM 교체): `src/db/models.py`를 SourceFile / IngestionLog /
+    FormRegistry / DevPartMaster로 재작성. ORM 5종(Part, Model, BomEdge,
+    ChangeEvent, PreprocessingRun) + UUIDType 모두 제거. `schema.sql` /
+    `search_simple.py` 삭제 (검색은 팀원 ETL_PG 측 책임).
+  - **Phase 3** (어댑터 출력 형식): ExtractedRow shape를
+    (core, payload, semantic, source_meta) → (dev_part_master_fields,
+    extra_fields, source_meta)로 변경. base.py에 build_extracted_row() helper
+    추가, 7 어댑터 갱신. BomExtraction 제거 → BOM 어댑터도 ExtractedRow
+    스트림으로 통일 (parent/qty/change_in은 extra_fields에 보존).
+    column_dictionary.yaml에 qty_new/qty_base/supplier/classification entry 추가.
+  - **Phase 4** (파이프라인 6 step): classify → extract → normalize →
+    narrativize → validate → db.load. ER 단계(resolve.py) 통째로 삭제.
+    narrativize 입력 시그니처가 (core, payload) → (dpm_fields, extra_fields)
+    로 변경 — legacy core dict는 compat shim이 처리. validate.py REQUIRED를
+    part_no_new + part_name 2개로 축소 (BOM 부품은 event/new_model이 NULL이
+    정상).
+  - **Phase 5** (DB load 재작성): load_run(session, run_dir)이 rows.parquet
+    + files.json + ingestion_log.json 세 파일을 모두 읽어 한 트랜잭션으로
+    적재. file_hash로 source_files dedup, ingestion_log/dev_part_master는
+    insert-only. update_embeddings()는 file_ids 인자로 부분 backfill 가능.
+    rollback_file(session, file_id)이 source_files 한 행 삭제하면 CASCADE로
+    자식 자동 삭제. run_id 기반 rollback_run은 NotImplementedError.
+  - **Phase 6** (CLI + tests): db rollback --file-id (--run-id 폐기), db
+    status는 ingestion_log status 집계, db verify는 테이블 단위 카운트,
+    db reset --confirm 추가. SQLite 단위 테스트 위해 PRAGMA foreign_keys=ON
+    + form_registry SQLite seed. 6개 테스트 파일 재작성, test_schema.py 삭제.
+- 유지한 강점:
+  - **D-010 동적 헤더 anchor 탐색** (changing_parts_list._detect_header_anchor)
+  - **NFC/NFKC 차등 정규화** (normalize.py + normalize_dpm_row 추가)
+  - **calamine 폴백** (utils/excel.read_workbook) — invalid XML 파일 대응
+  - **narrative_text 결정론적 생성** (narrativize.build_narrative, LLM 0회) —
+    embedding_text 컬럼으로 적재
+- 제거한 것:
+  - parts / models / bom_edges / change_events / preprocessing_runs ORM
+  - run_id 단위 DB lifecycle (filesystem dry_run/committed/rolled_back은 유지)
+  - search_simple.py + agent-search CLI (검색은 팀원 RAG 측 책임)
+  - resolve.py (ER 단순화 후에도 부속 모듈) — dev_part_master 단일 테이블
+    구조에서 part/model dedup 소비자가 없음
+  - Pydantic CoreFields (Core 13 spec) — dpm 컬럼이 사실상 데이터 모델
+- 대안:
+  - 우리 스키마 유지하고 팀원 측에 ETL 어댑터 추가 (기각 — 중복 인프라)
+  - 팀원 코드에 우리 강점 일부 이식 (기각 — 반대 방향, 정규화/narrative
+    로직 옮기기 비용이 더 큼)
+- 영향: 단일 데이터 모델로 통합. BOM Agent retrieve 노드가 팀원 + 우리
+  데이터 모두 동일 dev_part_master에서 조회 가능. 37 단위 테스트 모두 통과.
+- 자동 결정 (사람 확인 항목 중):
+  - **BOM 어댑터**: dev_part_master에 그대로 적재 (option A). event=NULL,
+    form_id="bom_ag_grid_36"로 구분. parent/qty/change_in/out은
+    extra_fields에 JSON으로 보존.
+  - **column_dictionary 충돌**: 우리 column_dictionary.yaml이 정본 — 팀원
+    측 alias가 발견되면 fuzzy_keywords에 추가.
+- 재검토 조건:
+  - 시험·DRBFM·HSMS 도메인 질의 요구 시 별도 도메인 테이블 분리 검토.
+  - 팀원 측에서 embedding_text 생성 명세를 별도로 정의하면 동기화.
