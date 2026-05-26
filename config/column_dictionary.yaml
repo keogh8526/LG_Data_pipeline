@@ -244,6 +244,62 @@ part_type:
 # D-011 Phase E: drbfm_note + test_plan_keys 제거 (multi-vector 삭제됨).
 # is_semantic / embedding_target 필드도 더 이상 사용 X (column_dict.py 갱신).
 
+
+# ── D-012: dev_part_master 전용 필드 ─────────────────────────────────
+# (Core 13에는 없지만 팀원 dpm 스키마에 존재 — column_dict로 직접 추출)
+
+qty_new:
+  description: "수량 (변경 후 / 신규)"
+  exact:
+    - "Common > Quanty"
+    - "Common > Quantity"
+    - "Common > Qty"
+    - "공통 > 수량"
+    - "Quantity"
+    - "Qty"
+    - "수량"
+  fuzzy_keywords: ["Qty", "수량", "quantity"]
+
+qty_base:
+  description: "수량 (변경 전 / 기존)"
+  exact:
+    - "Common > Base Qty"
+    - "공통 > 기존 수량"
+    - "Base Qty"
+    - "기존 수량"
+  fuzzy_keywords: ["base qty", "기존수량"]
+
+supplier:
+  description: "공급사 / Supplier"
+  exact:
+    - "부품 > 공급사"
+    - "Common > Supplier"
+    - "공통 > 공급사"
+    - "Supplier"
+    - "공급사"
+    - "Vendor"
+    - "Maker"
+  fuzzy_keywords: ["supplier", "공급사", "vendor", "maker"]
+
+classification:
+  description: "분류 (NEW/CHANGE 등) — dev_part_master classification 컬럼"
+  exact:
+    - "Common > Classification"
+    - "공통 > 분류"
+    - "Classification"
+    - "분류"
+  cell_value_mapping:
+    "Y(신규)": "NEW"
+    "Y(도입)": "NEW"
+    "신규": "NEW"
+    "전용": "NEW"
+    "공용": "CARRY"
+    "변경": "CHANGE"
+    "Change": "CHANGE"
+    "유지": "CARRY"
+    "Carry-over": "CARRY"
+
+
 # ── Buyer code → region 사전 (axioms.yaml에도 있지만 dict lookup 편의용) ──
 
 buyer_to_region:

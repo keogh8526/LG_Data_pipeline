@@ -30,10 +30,12 @@ from pydantic import ValidationError
 
 from src.ontology.schema import CoreFields
 from src.preprocess.adapters import (
-    BomExtraction,
     ExtractedRow,
     extract_sheet,
 )
+
+# D-012 Phase 3: BomExtraction 제거 (BOM 어댑터도 ExtractedRow 스트림).
+# 본 pipeline.py는 Phase 4에서 전면 재작성될 때까지 동작 보장 X.
 # D-011: ProjectMeta 제거.
 from src.preprocess.classify import classify_file
 from src.preprocess.diff import DiffReport, diff_against_golden, load_golden

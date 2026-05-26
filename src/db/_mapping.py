@@ -15,6 +15,9 @@ from __future__ import annotations
 from typing import Any
 
 # Core 13 필드명 (우리) → dev_part_master 컬럼명 (팀원)
+#
+# 추가로 column_dictionary.yaml에서 직접 추출되는 dpm 전용 필드
+# (qty_new/qty_base/supplier/classification/bom_level_raw)는 identity 매핑.
 CORE_TO_DEV_PART_MASTER: dict[str, str] = {
     "part_no":           "part_no_new",
     "base_part_no":      "part_no_base",
@@ -27,6 +30,12 @@ CORE_TO_DEV_PART_MASTER: dict[str, str] = {
     "change_reason":     "change_reason_raw",
     "bom_level":         "bom_depth",
     "part_type":         "part_type",
+    # column_dictionary로 직접 추출되는 dpm 컬럼 (identity)
+    "qty_new":           "qty_new",
+    "qty_base":          "qty_base",
+    "supplier":          "supplier",
+    "classification":    "classification",
+    "bom_level_raw":     "bom_level_raw",
 }
 
 # Core 13에는 없지만 dev_part_master에 있는 컬럼 — 어댑터/payload에서 추출 필요.

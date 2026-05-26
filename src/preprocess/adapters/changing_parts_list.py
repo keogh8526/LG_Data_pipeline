@@ -20,6 +20,7 @@ from src.ontology import axioms
 from src.preprocess.adapters.base import (
     ExtractedRow,
     SheetMeta,
+    build_extracted_row,
     cell_at,
     is_blank_row,
     iter_data_rows,
@@ -132,13 +133,14 @@ def _extract_sheet_meta(sheet: SheetData, cdict: ColumnDictionary) -> SheetMeta:
 
 
 def _derive_form_version(max_col: int) -> str:
+    """D-012: form_id 명명을 form_registry (changing_parts_list_NN) 와 일치시킴."""
     if max_col <= 92:
-        return "변경부품_list_91"
+        return "changing_parts_list_91"
     if max_col <= 95:
-        return "변경부품_list_95"
+        return "changing_parts_list_95"
     if max_col == 96:
-        return "변경부품_list_96"
-    return "변경부품_list_97"
+        return "changing_parts_list_96"
+    return "changing_parts_list_97"
 
 
 def extract_changing_parts_list_family(
@@ -188,7 +190,6 @@ def extract_changing_parts_list_family(
             continue
         core: dict[str, Any] = {}
         payload: dict[str, Any] = {}
-        semantic: dict[str, str] = {}
 
         for col_idx in range(1, len(row) + 1):
             header_path = headers.get(col_idx)
@@ -202,9 +203,7 @@ def extract_changing_parts_list_family(
 
             core_field = cdict.lookup(header_path)
             if core_field is not None:
-                mapped = cdict.map_cell_value(core_field, value)
-                core[core_field] = mapped
-                # D-011 Phase E: semantic 채움 제거 (semantic dict 미사용).
+                core[core_field] = cdict.map_cell_value(core_field, value)
 
         # 시트 메타 주입 (위치 9/12 fallback)
         if not core.get("base_model_code") and meta.base_model_code:
@@ -213,34 +212,21 @@ def extract_changing_parts_list_family(
             core["new_model_code"] = meta.new_model_code
         if not core.get("grade") and meta.sheet_grade:
             core["grade"] = meta.sheet_grade
-        # grade가 끝까지 비어있으면 "unknown"로 명시 (CoreFields 필수 필드 보호).
-        # sheet 명 / 컬럼 매핑 모두 못 채운 경우 — Pydantic의 Grade.UNKNOWN value.
-        if not core.get("grade"):
-            core["grade"] = "unknown"
         if not core.get("region") and meta.buyer_new:
             region = cdict.region_from_buyer(meta.buyer_new)
             if region:
                 core["region"] = region
 
-        # event_stage: 셀 값 자체에 CP/PP/DV/PV/PQ 패턴 (Event 컬럼)
-        # (lookup이 'event_stage' 매핑한 경우 이미 core에 들어옴)
-
-        # source_meta
         source_meta = {
             "source_file": file_path.name,
             "source_sheet": sheet.name,
             "source_row": row_idx,
-            "form_version": form_version,
+            "form_id": form_version,
             **meta.raw_meta,
             **file_meta,
         }
 
-        yield ExtractedRow(
-            core=core,
-            payload=payload,
-            semantic=semantic,
-            source_meta=source_meta,
-        )
+        yield build_extracted_row(core, payload, source_meta, cdict)
         rows_yielded += 1
 
     log.info(

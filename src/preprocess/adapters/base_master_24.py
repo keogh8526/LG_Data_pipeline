@@ -1,15 +1,6 @@
 """v2.0 §8-4 — base_master (24col, 구버전) 어댑터.
 
-헤더 구조: 행2에 23개 컬럼명, 행4부터 데이터.
-
-Core 매핑:
-  P/no.           → core.part_no
-  Desc.           → core.part_name
-  Module          → payload
-  CMDT            → payload (절삭 등)
-  도입/신규        → core.change_type
-  Lvl             → core.bom_level
-  Part Grade       → core.grade
+D-012: ExtractedRow → dev_part_master_fields.
 """
 
 from __future__ import annotations
@@ -20,6 +11,7 @@ from typing import Any
 
 from src.preprocess.adapters.base import (
     ExtractedRow,
+    build_extracted_row,
     cell_at,
     is_blank_row,
     iter_data_rows,
@@ -31,10 +23,9 @@ from src.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# 실측 base_master.xlsx 분석: 헤더는 row 1, 데이터 row 3부터 (row 2 비어있음).
-# 합성 fixture는 row 2 헤더 / row 4 데이터 — 시트의 row 1 첫 셀로 동적 판단.
 HEADER_ROW = 1
 DATA_START_ROW = 3
+FORM_ID = "base_master_24"
 
 
 def extract_base_master_24(
@@ -53,7 +44,7 @@ def extract_base_master_24(
         first_cell = normalize_cell_text(cell_at(sheet.rows, r, 2))
         if first_cell in {"No.", "No", "no."}:
             header_row = r
-            data_start = r + 2  # 빈 row 한 줄 skip
+            data_start = r + 2
             break
 
     headers: dict[int, str] = {}
@@ -72,7 +63,6 @@ def extract_base_master_24(
             continue
         core: dict[str, Any] = {}
         payload: dict[str, Any] = {}
-        semantic: dict[str, str] = {}
 
         for col_idx in range(1, len(row) + 1):
             header = headers.get(col_idx)
@@ -84,25 +74,14 @@ def extract_base_master_24(
             if core_field and value not in (None, ""):
                 core[core_field] = cdict.map_cell_value(core_field, value)
 
-        # grade/new_model_code 누락 시 sentinel 채움 (Pydantic 필수 통과)
-        if not core.get("grade"):
-            core["grade"] = "unknown"
-        if not core.get("new_model_code"):
-            # base_master_24는 모델코드 컬럼 없음 — 파일명에서 추출 또는 sentinel
-            core["new_model_code"] = "UNKNOWN"
-
         source_meta = {
             "source_file": file_path.name,
             "source_sheet": sheet.name,
             "source_row": row_idx,
-            "form_version": "base_master_24",
+            "form_id": FORM_ID,
             **file_meta,
         }
-        yield ExtractedRow(
-            core=core,
-            payload=payload,
-            semantic=semantic,
-            source_meta=source_meta,
-        )
+        yield build_extracted_row(core, payload, source_meta, cdict)
         rows_yielded += 1
+
     log.info("adapter.base_master.extracted", file=file_path.name, rows=rows_yielded)
