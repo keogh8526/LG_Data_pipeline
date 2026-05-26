@@ -34,6 +34,7 @@ from sqlalchemy import delete, func, select
 from src.db.engine import init_db, make_engine, session_factory
 from src.db.load import load_run, update_embeddings
 from src.db.models import DevPartMaster, IngestionLog, SourceFile
+from src.db.retrieve import hybrid_search, lexical_search, semantic_search
 from src.db.rollback import rollback_file
 from src.preprocess.classify import classify_dir, classify_file
 from src.preprocess.inventory import build_inventory
@@ -331,6 +332,108 @@ def db_reset(
         session.execute(delete(SourceFile))
         session.commit()
     typer.echo("All data deleted.")
+
+
+# --- retrieve sub-app -----------------------------------------------------
+
+retrieve_app = typer.Typer(help="dev_part_master 검색 (semantic / lexical / hybrid).")
+app.add_typer(retrieve_app, name="retrieve")
+
+
+def _print_hits(hits, mode: str) -> None:
+    if not hits:
+        typer.echo(f"  (no hits — {mode})")
+        return
+    for h in hits:
+        scores = []
+        if h.score_rrf is not None:
+            scores.append(f"rrf={h.score_rrf:.4f}")
+        if h.score_semantic is not None:
+            scores.append(f"sem={h.score_semantic:.3f}")
+        if h.score_lexical is not None:
+            scores.append(f"lex={h.score_lexical:.3f}")
+        head = " ".join(scores)
+        typer.echo(
+            f"  [{head}] {(h.part_no_new or '?'):<14} "
+            f"| {(h.event or '-'):<10} "
+            f"| {(h.new_model or '-')[:18]:<18} "
+            f"| {(h.part_name or '-')[:32]:<32} "
+            f"| {h.form_id}"
+        )
+        if h.embedding_text:
+            typer.echo(f"         {h.embedding_text[:160]}")
+
+
+@retrieve_app.command("semantic")
+def retrieve_semantic(
+    query: str = typer.Argument(..., help="자연어 쿼리."),
+    top_k: int = typer.Option(10, "--top-k"),
+    form_id: str | None = typer.Option(None, "--form-id"),
+    event: str | None = typer.Option(None, "--event", help="New / Change / Carry-over"),
+    region: str | None = typer.Option(None, "--region"),
+) -> None:
+    """벡터 cosine 거리 기준 검색 (HNSW)."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as s:
+        hits = semantic_search(
+            s, query, top_k=top_k, form_id=form_id, event=event, region=region
+        )
+    _print_hits(hits, "semantic")
+
+
+@retrieve_app.command("lexical")
+def retrieve_lexical(
+    query: str = typer.Argument(..., help="키워드 또는 짧은 자연어."),
+    top_k: int = typer.Option(10, "--top-k"),
+    form_id: str | None = typer.Option(None, "--form-id"),
+    event: str | None = typer.Option(None, "--event"),
+    region: str | None = typer.Option(None, "--region"),
+    min_sim: float = typer.Option(0.05, "--min-sim"),
+) -> None:
+    """pg_trgm word_similarity 기준 검색."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as s:
+        hits = lexical_search(
+            s,
+            query,
+            top_k=top_k,
+            form_id=form_id,
+            event=event,
+            region=region,
+            min_similarity=min_sim,
+        )
+    _print_hits(hits, "lexical")
+
+
+@retrieve_app.command("hybrid")
+def retrieve_hybrid(
+    query: str = typer.Argument(..., help="자연어 쿼리."),
+    top_k: int = typer.Option(10, "--top-k"),
+    pool: int = typer.Option(30, "--pool", help="각 모달리티 raw top-N."),
+    form_id: str | None = typer.Option(None, "--form-id"),
+    event: str | None = typer.Option(None, "--event"),
+    region: str | None = typer.Option(None, "--region"),
+    sem_w: float = typer.Option(1.0, "--semantic-weight"),
+    lex_w: float = typer.Option(1.0, "--lexical-weight"),
+) -> None:
+    """Semantic + Lexical RRF 융합 검색."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as s:
+        hits = hybrid_search(
+            s,
+            query,
+            top_k=top_k,
+            candidate_pool=pool,
+            semantic_weight=sem_w,
+            lexical_weight=lex_w,
+            form_id=form_id,
+            event=event,
+            region=region,
+        )
+    _print_hits(hits, "hybrid")
 
 
 if __name__ == "__main__":
