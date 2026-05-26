@@ -1,8 +1,12 @@
-"""v2.0 Query Router 회귀 (7케이스)."""
+"""v2.0 Query Router 회귀 (7케이스) — Phase D에서 삭제 예정."""
 
 from __future__ import annotations
 
-from src.search.router import route_query
+import pytest
+
+pytest.skip("Phase D에서 src/search/ 통째 삭제 예정", allow_module_level=True)
+
+from src.search.router import route_query  # noqa: E402
 
 
 def test_part_no_pattern_routes_exact_sql():

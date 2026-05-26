@@ -101,18 +101,7 @@ forms:
     confidence_full: 1.0
     confidence_partial: 0.7
 
-  # ── Activity Master 메타 (11~13col, run-level config) ──
-  activity_master_meta:
-    sheet_name_patterns:
-      - "^Master$"
-    row2_markers:
-      - col: 2
-        value_regex: "^※ Master"
-      - col: 1
-        value_regex: "^Master|모델명"
-    max_col_range: [9, 14]
-    confidence_full: 1.0
-    confidence_partial: 0.7
+  # D-011: activity_master_meta family 제거. 해당 시트는 unknown으로 분류됨.
 
 # ── 우선순위 (동점 시 위 → 아래 순으로 채택) ──
 priority:
@@ -122,7 +111,6 @@ priority:
   - v1_2_template_59
   - UAE_신규개발_58
   - base_master_24
-  - activity_master_meta
 
 # 분류 임계
 threshold:

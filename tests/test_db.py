@@ -153,27 +153,20 @@ def test_quarantine_rows_excluded_from_db_load(session, tmp_path):
 
 
 # ── B-3 회귀: update_embeddings UPDATE가 COALESCE로 None 보호 ──
+# D-011: multi-vector 5개 → narrative_emb 단일 벡터로 축소.
 
 
 def test_update_embeddings_sql_uses_coalesce():
-    """B-3: update_embeddings의 UPDATE SQL이 COALESCE를 통해 NULL 덮어쓰기 방지."""
+    """B-3 (D-011 후): update_embeddings의 UPDATE SQL이 COALESCE 사용."""
     import inspect
 
     from src.db import load as load_module
 
     src = inspect.getsource(load_module.update_embeddings)
-    # COALESCE 패턴이 모든 벡터 컬럼에 적용됐는지
-    for col in (
-        "narrative_emb",
-        "change_point_emb",
-        "change_reason_emb",
-        "drbfm_emb",
-        "test_plan_emb",
-    ):
-        assert f"COALESCE(CAST(:{col}" in src, (
-            f"update_embeddings must use COALESCE for {col} (B-3 fix). "
-            f"Otherwise None plans overwrite existing vectors."
-        )
+    assert "COALESCE(CAST(:vec AS vector), narrative_emb)" in src, (
+        "update_embeddings must use COALESCE for narrative_emb (B-3 fix). "
+        "Otherwise None vectors overwrite existing data on re-run."
+    )
 
 
 def test_bom_edges_with_unknown_model_creates_model_row(session, tmp_path):

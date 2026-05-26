@@ -8,10 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Union
 
-from src.preprocess.adapters.activity_master_meta import (
-    ProjectMeta,
-    extract_activity_master_meta,
-)
+# D-011: activity_master_meta 어댑터 제거 (project_meta는 BOM Agent 답변에 안 씀).
 from src.preprocess.adapters.base import BomExtraction, ExtractedRow
 from src.preprocess.adapters.base_master_24 import extract_base_master_24
 from src.preprocess.adapters.bom_ag_grid import extract_bom_ag_grid
@@ -26,7 +23,7 @@ from src.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-ExtractResult = Union[list[ExtractedRow], BomExtraction, ProjectMeta]
+ExtractResult = Union[list[ExtractedRow], BomExtraction]
 
 
 # form_id (또는 sub-variant) → 어댑터 함수
@@ -50,7 +47,7 @@ def extract_sheet(
     Returns:
         - 일반 양식: ``list[ExtractedRow]``
         - BOM_ag_grid_36: ``BomExtraction``
-        - activity_master_meta: ``ProjectMeta``
+        - (D-011: activity_master_meta 제거됨)
         - unknown / error: ``[]``
     """
     file_meta = file_meta or {}
@@ -69,8 +66,6 @@ def extract_sheet(
         return list(extract_base_master_24(file_path, sheet, file_meta))
     if form_id == "UAE_신규개발_58":
         return list(extract_uae_dev_list(file_path, sheet, file_meta))
-    if form_id == "activity_master_meta":
-        return extract_activity_master_meta(file_path, sheet, file_meta)
-
+    # D-011: activity_master_meta는 제거 — unknown으로 분류돼 []반환.
     log.warning("dispatcher.unknown_form", form=form_id, file=file_path.name, sheet=sheet.name)
     return []

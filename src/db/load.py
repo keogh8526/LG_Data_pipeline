@@ -410,28 +410,23 @@ def load_run(
 # --- Embeddings ---------------------------------------------------------
 
 
-_VECTOR_COLUMNS = (
-    "narrative_emb",
-    "change_point_emb",
-    "change_reason_emb",
-    "drbfm_emb",
-    "test_plan_emb",
-)
+# D-011: multi-vector (5 벡터) → narrative_emb 단일 벡터.
+# BOM Agent의 retrieve는 단일 narrative embedding만 사용.
 
 
 def update_embeddings(session: Session, run_id: str) -> int:
-    """run 내 change_events에 multi-vector 임베딩 생성·저장.
+    """run 내 change_events에 narrative_emb 단일 임베딩 생성·저장.
 
     Raises:
         RuntimeError: ENABLE_EMBEDDING != 1.
     """
     if os.environ.get("ENABLE_EMBEDDING", "0") != "1":
-        raise RuntimeError("embedding disabled — set ENABLE_EMBEDDING=1 and run Ollama")
+        raise RuntimeError("embedding disabled - set ENABLE_EMBEDDING=1 and run Ollama")
     if session.bind is None or session.bind.dialect.name != "postgresql":
         log.warning("db.embed.skip_non_pg", dialect=getattr(session.bind, "dialect", None))
         return 0
 
-    from src.embed.multi_vector import embed_change_event_rows
+    from src.embed.embedder import embed_texts
 
     events = (
         session.execute(select(ChangeEvent).where(ChangeEvent.run_id == run_id))
@@ -441,25 +436,20 @@ def update_embeddings(session: Session, run_id: str) -> int:
     if not events:
         return 0
 
-    plans = embed_change_event_rows(events)
-    # B-3: COALESCE로 None 값을 기존 컬럼 그대로 유지 (NULL 덮어쓰기 방지).
-    # 부분 채워진 plan (예: test_plan_emb만 None)이 두 번째 호출에서 첫번째 호출의
-    # 벡터를 NULL로 날리는 사고 방지.
+    texts = [(e.narrative_text or "") for e in events]
+    vectors = embed_texts(texts)
+
+    # B-3 유지: COALESCE로 NULL 덮어쓰기 방지 (재실행 시).
     update_sql = text(
         "UPDATE change_events SET "
-        "narrative_emb     = COALESCE(CAST(:narrative_emb     AS vector), narrative_emb), "
-        "change_point_emb  = COALESCE(CAST(:change_point_emb  AS vector), change_point_emb), "
-        "change_reason_emb = COALESCE(CAST(:change_reason_emb AS vector), change_reason_emb), "
-        "drbfm_emb         = COALESCE(CAST(:drbfm_emb         AS vector), drbfm_emb), "
-        "test_plan_emb     = COALESCE(CAST(:test_plan_emb     AS vector), test_plan_emb) "
+        "narrative_emb = COALESCE(CAST(:vec AS vector), narrative_emb) "
         "WHERE event_id = :event_id"
     )
-    for event, plan in zip(events, plans, strict=True):
-        params: dict[str, Any] = {"event_id": event.event_id}
-        for col in _VECTOR_COLUMNS:
-            vec = getattr(plan, col, None)
-            params[col] = str(vec) if vec is not None else None
-        session.execute(update_sql, params)
+    for event, vec in zip(events, vectors, strict=True):
+        session.execute(
+            update_sql,
+            {"event_id": event.event_id, "vec": str(vec) if vec else None},
+        )
     session.commit()
     log.info("db.embeddings.updated", run_id=run_id, events=len(events))
     return len(events)

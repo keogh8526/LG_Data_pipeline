@@ -75,8 +75,7 @@ _PRIORITY_FALLBACK = (
     "v1_2_template_59",
     "UAE_신규개발_58",
     "base_master_24",
-    "activity_master_meta",
-)
+)  # D-011: activity_master_meta 제거.
 
 
 def load_signatures(path: Path = FORM_SIGNATURES_PATH) -> dict[str, Any]:

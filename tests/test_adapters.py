@@ -1,4 +1,4 @@
-"""v2.0 양식 어댑터 회귀."""
+"""v2.0 양식 어댑터 회귀 (D-011 간소화 후)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,11 @@ from pathlib import Path
 
 from src.preprocess.adapters import (
     BomExtraction,
-    ProjectMeta,
     extract_bom_ag_grid,
     extract_changing_parts_list_family,
     extract_new_parts_list_75,
     extract_sheet,
 )
-from src.preprocess.adapters.activity_master_meta import extract_activity_master_meta
 from src.utils.excel import read_workbook
 
 
@@ -36,14 +34,13 @@ def test_changing_parts_extracts_core(fixture_workbooks: Path):
     assert first.source_meta["form_version"] == "변경부품_list_96"
 
 
-def test_new_parts_list_serializes_owners(fixture_workbooks: Path):
+def test_new_parts_list_extracts_rows(fixture_workbooks: Path):
+    """D-011: 담당자_목록 직렬화는 제거됨 — 일반 row 추출만 검증."""
     file = fixture_workbooks / "fixture_new_parts_list_75.xlsx"
     sheets = read_workbook(file)
     sheet = next(s for s in sheets if s.name == "신규부품리스트")
     rows = list(extract_new_parts_list_75(file, sheet))
-    assert rows
-    # 담당자 슬롯이 list로 직렬화돼 있어야 함
-    assert isinstance(rows[0].payload.get("담당자_목록", []), list)
+    assert rows, "신규부품리스트에서 최소 1행 추출"
 
 
 def test_bom_ag_grid_emits_parts_and_edges(fixture_workbooks: Path):
@@ -65,85 +62,11 @@ def test_dispatcher_routes_correctly(fixture_workbooks: Path):
     assert out and out[0].core.get("part_no")
 
 
-def test_activity_master_extracts_meta(fixture_workbooks: Path):
-    file = fixture_workbooks / "fixture_activity_master.xlsx"
-    sheets = read_workbook(file)
-    sheet = next(s for s in sheets if s.name == "Master")
-    meta = extract_activity_master_meta(file, sheet)
-    assert isinstance(meta, ProjectMeta)
-    assert meta.date is not None  # 2024-04-09 파싱
+# D-011: test_activity_master_extracts_meta + test_new_parts_role_slots_use_header_keys 제거.
+# 어댑터 자체가 사라졌으므로 회귀 테스트도 무의미.
 
 
 # ── B-1 회귀: BOM 어댑터가 행 길이 부족해도 IndexError 안 남 ──
-
-
-# ── B-7 회귀: NewParts 슬롯이 _NAME_KEYS/_SSO_KEYS 헤더로 검증 ──
-
-
-import pytest
-
-
-@pytest.mark.skip(reason="HEADER_ROWS=[3]로 단순화 후 fixture 행4 의존. Phase A에서 _collect_role_slots와 함께 제거 예정.")
-def test_new_parts_role_slots_use_header_keys(tmp_path):
-    """슬롯 위치가 +1/+2 hardcode 아닌 헤더 검색으로 결정됨."""
-    import openpyxl
-
-    from src.preprocess.adapters.new_parts_list_75 import (
-        _collect_role_slots,
-        extract_new_parts_list_75,
-    )
-    from src.utils.excel import read_workbook
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "신규부품리스트"
-    # 행1 ~ 행3 일반, 행4 leaf — 한 슬롯은 (역할, 이름, SSO ID), 다른 슬롯은 (역할, SSO ID, 이름) 역순
-    n = 75
-    row1 = ["Key-In" if i % 2 == 0 else "LOV" for i in range(n)]
-    ws.append(row1)
-    ws.append(["필수"] * 5 + ["옵션"] * (n - 5))
-    ws.append(["No", "프로젝트 코드", "신규 구분", "부품 P/No.", "품명"]
-              + [None] * (n - 5))
-    # 슬롯1: col 10-12 = 역할, 이름, SSO ID
-    # 슬롯2: col 20-22 = 역할, SSO ID, 이름 (역순)
-    row4: list[Any] = [None] * n
-    row4[9] = "역할"
-    row4[10] = "이름"
-    row4[11] = "SSO ID"
-    row4[19] = "역할"
-    row4[20] = "SSO ID"
-    row4[21] = "이름"
-    ws.append(row4)
-    # 데이터 행
-    data: list[Any] = [None] * n
-    data[3] = "AAA1234567"
-    data[4] = "Sensor"
-    data[9] = "설계"
-    data[10] = "김민석"
-    data[11] = "kim123"
-    data[19] = "구매"
-    data[20] = "park999"
-    data[21] = "박철수"
-    ws.append(data)
-
-    path = tmp_path / "new_parts_reverse.xlsx"
-    wb.save(path)
-    sheet = read_workbook(path)[0]
-
-    rows = list(extract_new_parts_list_75(path, sheet))
-    assert rows
-    members = rows[0].payload.get("담당자_목록", [])
-    assert len(members) == 2
-
-    # 슬롯1: 정상 순서
-    assert members[0]["역할"] == "설계"
-    assert members[0]["이름"] == "김민석"
-    assert members[0]["SSO ID"] == "kim123"
-
-    # 슬롯2: 역순이지만 헤더 매칭 덕분에 이름/SSO가 정확히 식별
-    assert members[1]["역할"] == "구매"
-    assert members[1]["이름"] == "박철수"   # 헤더 'SSO ID'와 '이름'이 역순이어도 정확히 매핑
-    assert members[1]["SSO ID"] == "park999"
 
 
 def test_bom_ag_grid_handles_short_rows(tmp_path):

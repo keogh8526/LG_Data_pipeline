@@ -35,11 +35,7 @@ def test_bom_ag_grid_classified(fixture_workbooks: Path):
     assert result.form_version == "BOM_ag_grid_36"
 
 
-def test_activity_master_classified(fixture_workbooks: Path):
-    file = fixture_workbooks / "fixture_activity_master.xlsx"
-    result, sheet_results = classify_file(file)
-    # 9~14 max_col에 row2 ※ Master 마커
-    assert result.form_version in {"activity_master_meta", "unknown"}
+# D-011: test_activity_master_classified 제거 — 어댑터 + form 룰 함께 삭제됨.
 
 
 def test_classify_dir_distributes(fixture_workbooks: Path):

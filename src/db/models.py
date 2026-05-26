@@ -231,43 +231,9 @@ class ChangeEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
-# ── Test Plans ───────────────────────────────────────────────────────
-
-
-class TestPlan(Base):
-    """부품인정시험 (시험기획 시트에서 추출)."""
-
-    __tablename__ = "test_plans"
-
-    plan_id: Mapped[uuid.UUID] = _uuid_pk()
-    event_id = _uuid_fk("change_events.event_id")
-    test_item: Mapped[str | None] = mapped_column(String(100), default=None)
-    test_standard: Mapped[str | None] = mapped_column(String(100), default=None)
-    responsible: Mapped[str | None] = mapped_column(String(20), default=None)
-    sample_count: Mapped[int | None] = mapped_column(SmallInteger, default=None)
-    result: Mapped[str | None] = mapped_column(String(20), default=None)
-    completed_at: Mapped[str | None] = mapped_column(Date, default=None)
-    payload: Mapped[dict | None] = mapped_column(_JSONB, default=None)
-    run_id: Mapped[str | None] = mapped_column(String(36), index=True, default=None)
-
-
-# ── HSMS Records ────────────────────────────────────────────────────
-
-
-class HsmsRecord(Base):
-    """친환경 (재인증·RoHS·REACH)."""
-
-    __tablename__ = "hsms_records"
-
-    event_id = _uuid_fk("change_events.event_id", nullable=False)
-    __mapper_args__ = {"primary_key": [event_id]}
-
-    material_changed: Mapped[bool | None] = mapped_column(Boolean, default=None)
-    recertification_needed: Mapped[bool | None] = mapped_column(Boolean, default=None)
-    rohs_status: Mapped[str | None] = mapped_column(String(20), default=None)
-    reach_status: Mapped[str | None] = mapped_column(String(20), default=None)
-    payload: Mapped[dict | None] = mapped_column(_JSONB, default=None)
-    run_id: Mapped[str | None] = mapped_column(String(36), index=True, default=None)
+# D-011: TestPlan / HsmsRecord 도메인 모델은 v2.0 간소화로 제거.
+# 현 BOM Agent 시나리오에서 도메인 부속 테이블(부품인정시험 / HSMS)은 활용 안 됨.
+# 필요해지면 ORM 재추가 + schema.sql ALTER 필요.
 
 
 # ── Preprocessing Runs ──────────────────────────────────────────────
@@ -333,10 +299,9 @@ __all__ = [
     "BomEdge",
     "ChangeEvent",
     "FormVersion",
-    "HsmsRecord",
     "Model",
     "NeedsReview",
     "Part",
     "PreprocessingRun",
-    "TestPlan",
 ]
+# 참고: TestPlan / HsmsRecord 제거 (Phase A, D-011). FormVersion / NeedsReview는 Phase C에서 제거.

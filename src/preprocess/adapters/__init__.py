@@ -1,15 +1,13 @@
-"""v2.0 §8 양식 어댑터 7종 + dispatcher.
+"""v2.0 (D-011 후) 양식 어댑터 + dispatcher.
 
-각 어댑터는 (file_path, sheet, file_meta) → Iterable[ExtractedRow] 또는
-BOM의 경우 (parts, bom_edges) tuple, activity_master는 ProjectMeta를 반환.
+각 어댑터는 ``(file_path, sheet, file_meta) → list[ExtractedRow]`` 또는
+BOM의 경우 ``BomExtraction``을 반환.
+
+D-011: activity_master_meta 어댑터 제거. ProjectMeta 의존성도 함께 제거.
 """
 
 from __future__ import annotations
 
-from src.preprocess.adapters.activity_master_meta import (
-    ProjectMeta,
-    extract_activity_master_meta,
-)
 from src.preprocess.adapters.base import (
     BomExtraction,
     ExtractedRow,
@@ -28,9 +26,7 @@ from src.preprocess.adapters.v1_2_template import extract_v1_2_template
 __all__ = [
     "BomExtraction",
     "ExtractedRow",
-    "ProjectMeta",
     "SheetMeta",
-    "extract_activity_master_meta",
     "extract_base_master_24",
     "extract_bom_ag_grid",
     "extract_changing_parts_list_family",

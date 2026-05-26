@@ -32,9 +32,9 @@ from src.ontology.schema import CoreFields
 from src.preprocess.adapters import (
     BomExtraction,
     ExtractedRow,
-    ProjectMeta,
     extract_sheet,
 )
+# D-011: ProjectMeta 제거.
 from src.preprocess.classify import classify_file
 from src.preprocess.diff import DiffReport, diff_against_golden, load_golden
 from src.preprocess.narrativize import narrativize
@@ -242,14 +242,7 @@ def preprocess_file(file_path: Path, run_id: str) -> tuple[FileResult, list[dict
             form_versions.add(sc.form_id)
             continue
 
-        if isinstance(result, ProjectMeta):
-            project_meta = {
-                "source_sheet": result.source_sheet,
-                "date": result.date,
-                "phase_dates": result.phase_dates,
-                "description": result.description,
-            }
-            continue
+        # D-011: ProjectMeta 분기 제거 — activity_master_meta는 unknown으로 빠짐.
 
         # list[ExtractedRow]
         records, rows_in, rows_out, quar = _process_extracted_rows(

@@ -195,14 +195,7 @@ def make_uae_dev_list_58() -> Path:
     return _save(wb, "fixture_uae_dev_list_58.xlsx")
 
 
-def make_activity_master_meta() -> Path:
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Master"
-    ws.append(_pad([None, "※ Master"], 13))
-    ws.append(_pad(["모델명 :", "WSED7667M", None, None, "양산일 :", "2024-04-09"], 13))
-    ws.append(_pad(["개발 사유", "신규 안전 규제 대응을 위한 도어 힌지 강화"], 13))
-    return _save(wb, "fixture_activity_master.xlsx")
+# D-011: activity_master fixture 제거 (어댑터 자체가 삭제됨).
 
 
 def make_all() -> list[Path]:
@@ -215,7 +208,6 @@ def make_all() -> list[Path]:
         make_base_master_24(),
         make_v1_2_template(),
         make_uae_dev_list_58(),
-        make_activity_master_meta(),
     ]
 
 
