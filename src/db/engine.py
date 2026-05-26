@@ -94,7 +94,13 @@ def init_db(engine: Engine) -> None:
         return
 
     sql = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
-    statements = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
+    # 주석 라인 먼저 제거 (라인이 '--'로 시작하는 경우).
+    # 단순 ';' split은 ';'를 만나는 위치에서 끊기는데, 주석이 statement 앞에
+    # 붙어있으면 strip 후 '--'로 시작하는 것처럼 보여 통째로 버려졌던 버그 수정.
+    no_comment_lines = "\n".join(
+        line for line in sql.splitlines() if not line.strip().startswith("--")
+    )
+    statements = [s.strip() for s in no_comment_lines.split(";") if s.strip()]
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))

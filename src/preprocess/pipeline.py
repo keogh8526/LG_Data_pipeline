@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import uuid
@@ -162,11 +163,51 @@ def compute_file_meta(path: Path) -> FileMeta:
 # --- Per-row processing ---------------------------------------------------
 
 
+_NUMERIC_DPM_FIELDS = {"qty_new", "qty_base", "bom_depth"}
+_NULL_LIKE = frozenset({"-", "–", "—", "", "n/a", "na", "null", "none", "nan"})
+
+
+def _coerce_numeric(value: Any) -> Any:
+    """qty/bom_depth 셀에 문자열 '-' 같은 null-token이나 비-숫자가 섞이면 None.
+
+    parquet의 컬럼 dtype 강제(float / Int64) 위해 행 단위로 미리 처리.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    s = str(value).strip()
+    if not s or s.lower() in _NULL_LIKE:
+        return None
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
 def _process_extracted_row(er: ExtractedRow, file_name: str) -> dict[str, Any]:
-    """ExtractedRow → DataFrame-ready record (정규화 + narrative 포함)."""
+    """ExtractedRow → DataFrame-ready record (정규화 + narrative 포함).
+
+    환경변수 ``SKIP_VALIDATION=1``이면 axiom post_validate / quarantine을 모두
+    우회 — 어댑터가 뽑은 raw value 그대로 DB까지 흘려보냄. 추출 품질을 직접
+    검토하기 위한 디버그 모드.
+    """
     dpm_norm, fails = normalize_dpm_row(er.dev_part_master_fields)
 
-    quarantine_reason = "; ".join(f"{k}={v}" for k, v in fails.items()) or None
+    # qty/bom_depth 숫자 캐스트 — 실데이터에서 '-', 빈 문자열 등 섞임.
+    for k in _NUMERIC_DPM_FIELDS:
+        if k in dpm_norm:
+            dpm_norm[k] = _coerce_numeric(dpm_norm[k])
+    if "bom_depth" in dpm_norm and dpm_norm["bom_depth"] is not None:
+        try:
+            dpm_norm["bom_depth"] = int(dpm_norm["bom_depth"])
+        except (TypeError, ValueError):
+            dpm_norm["bom_depth"] = None
+
+    if os.environ.get("SKIP_VALIDATION", "0") == "1":
+        quarantine_reason = None
+    else:
+        quarantine_reason = "; ".join(f"{k}={v}" for k, v in fails.items()) or None
 
     narrative = build_narrative(dpm_norm, er.extra_fields)
 
