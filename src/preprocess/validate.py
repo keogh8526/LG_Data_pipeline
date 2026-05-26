@@ -1,53 +1,50 @@
-"""v2.0 (D-011 후) Step 7 — 7 핵심 지표 검증.
+"""D-012 — 7 핵심 지표 검증, dev_part_master 컬럼 기준.
 
-이전 15+1 지표(통일성5/품질5/처리5/payload_preservation)에서 BOM Agent 시나리오에
-필요한 7개로 축소:
+이전 (D-011): Core 13 컬럼명 (part_no/change_type 등) 기준.
+신규 (D-012): dpm 컬럼명 (part_no_new/event 등) 기준 — 어댑터 출력 변경 반영.
 
-  A. 통일성 (3): column_match, type_match, value_format_match, row_preservation
+지표 (그대로 7개):
+  A. 통일성 (4): column_match, type_match, value_format_match, row_preservation
   B. 품질  (2): null_rate_required, axiom_violation_rate
   C. 처리  (관찰): rows_in, rows_out, rows_quarantined, rows_dropped, drop_reasons
-
-threshold 완화 (실데이터 calibration 결과 반영):
-  - value_format_match: 0.98 → 0.95
-  - row_preservation: 0.95 → 0.90
-  - null_rate_required_max: 0.01 → 0.05
-  - axiom_violation_rate_max: 0.02 → 0.05
-
-제거된 지표 (D-011): referential_integrity, duplicate_rate, outlier_rate,
-null_rate_optional, payload_preservation_rate.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
 from src.ontology import axioms
 
-# v2.0 Core 13: 필수 vs 옵셔널
+# dev_part_master 컬럼: 필수 vs 옵셔널.
+# D-012: BOM 어댑터(부품 row)는 event/new_model이 NULL이 정상이므로
+# REQUIRED를 part_no_new + part_name으로 한정. 양식별 추가 필수 검증은
+# 어댑터 책임 (column_dictionary fuzzy threshold + axiom_violation으로 흡수).
 REQUIRED_FIELDS: tuple[str, ...] = (
-    "part_no",
+    "part_no_new",
     "part_name",
-    "new_model_code",
-    "grade",
-    "change_type",
 )
 OPTIONAL_FIELDS: tuple[str, ...] = (
-    "base_part_no",
-    "base_model_code",
+    "new_model",
+    "event",
+    "part_no_base",
+    "base_model",
     "region",
-    "event_stage",
-    "change_point",
-    "change_reason",
-    "bom_level",
+    "change_point_raw",
+    "change_reason_raw",
+    "bom_depth",
+    "bom_level_raw",
     "part_type",
+    "qty_new",
+    "qty_base",
+    "supplier",
+    "classification",
 )
 EXPECTED_FIELDS: tuple[str, ...] = REQUIRED_FIELDS + OPTIONAL_FIELDS
 
-EXPECTED_DTYPES: dict[str, str] = {"bom_level": "Int64"}
+EXPECTED_DTYPES: dict[str, str] = {"bom_depth": "Int64"}
 
 THRESHOLDS: dict[str, float] = {
     "column_match": 1.0,
@@ -60,26 +57,22 @@ THRESHOLDS: dict[str, float] = {
 
 
 class ValidationReport(BaseModel):
-    """processed run (또는 file)의 7 지표 측정 결과 (D-011 후)."""
+    """processed run (또는 file)의 7 지표 측정 결과 (D-012, dpm 컬럼 기준)."""
 
-    # A. 통일성
     column_match: float = 0.0
     type_match: float = 0.0
     value_format_match: float = 0.0
     row_preservation: float = 0.0
 
-    # B. 품질
     null_rate_required: float = 0.0
     axiom_violation_rate: float = 0.0
 
-    # C. 처리 (관찰만 — threshold 없음)
     rows_in: int = 0
     rows_out: int = 0
     rows_quarantined: int = 0
     rows_dropped: int = 0
     drop_reasons: dict[str, int] = Field(default_factory=dict)
 
-    # Meta
     file_path: str | None = None
     form_version: str | None = None
     run_id: str
@@ -105,22 +98,17 @@ class ValidationReport(BaseModel):
         return failures
 
 
-# --- Measurement helpers ----------------------------------------------
-
-
 def _value_passes_format(value: object, field_name: str) -> bool:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return True
     text = str(value)
-    if field_name in {"part_no", "base_part_no"}:
+    if field_name in {"part_no_new", "part_no_base"}:
         return axioms.validate_part_no(text)
-    if field_name in {"new_model_code", "base_model_code"}:
+    if field_name in {"new_model", "base_model"}:
         return axioms.validate_model_code(text)
-    if field_name == "change_type":
+    if field_name == "event":
         return axioms.validate_change_type(text)
-    if field_name == "grade":
-        return axioms.validate_grade(text)
-    if field_name == "bom_level":
+    if field_name == "bom_depth":
         try:
             return axioms.validate_bom_level(int(value))  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -129,15 +117,15 @@ def _value_passes_format(value: object, field_name: str) -> bool:
 
 
 def _measure_column_match(columns: list[str]) -> float:
-    present = sum(1 for f in EXPECTED_FIELDS if f in columns)
-    return present / len(EXPECTED_FIELDS)
+    """필수 컬럼 존재 비율 (옵셔널은 미존재해도 OK)."""
+    present = sum(1 for f in REQUIRED_FIELDS if f in columns)
+    return present / len(REQUIRED_FIELDS)
 
 
 def _measure_type_match(df: pd.DataFrame) -> float:
     if not EXPECTED_DTYPES:
         return 1.0
-    ok = 0
-    checked = 0
+    ok = checked = 0
     for column in EXPECTED_DTYPES:
         if column not in df.columns:
             continue
@@ -146,15 +134,14 @@ def _measure_type_match(df: pd.DataFrame) -> float:
         if series.empty:
             ok += 1
             continue
-        if column == "bom_level":
-            if pd.api.types.is_integer_dtype(series) or all(isinstance(v, int) for v in series):
-                ok += 1
+        if pd.api.types.is_integer_dtype(series) or all(isinstance(v, int) for v in series):
+            ok += 1
     return ok / checked if checked else 1.0
 
 
 def _measure_value_format_match(df: pd.DataFrame) -> float:
     checked = ok = 0
-    for field in ("part_no", "base_part_no", "new_model_code", "change_type", "grade"):
+    for field in ("part_no_new", "part_no_base", "new_model", "event"):
         if field not in df.columns:
             continue
         for value in df[field].dropna().tolist():
@@ -197,12 +184,16 @@ def validate_dataframe(
     form_version: str | None = None,
     rows_in: int | None = None,
 ) -> ValidationReport:
-    """processed events DataFrame → 7 핵심 지표 측정 (D-011 후)."""
+    """processed events DataFrame → 7 핵심 지표 측정 (D-012, dpm 컬럼)."""
     columns = list(df.columns)
     if "_quarantine_reason" in columns:
         quarantined_mask = df["_quarantine_reason"].notna()
     else:
-        quarantined_mask = pd.Series(False, index=df.index) if not df.empty else pd.Series([], dtype=bool)
+        quarantined_mask = (
+            pd.Series(False, index=df.index)
+            if not df.empty
+            else pd.Series([], dtype=bool)
+        )
     rows_quarantined = int(quarantined_mask.sum())
     rows_out = len(df) - rows_quarantined
     raw_rows = rows_in if rows_in is not None else len(df)

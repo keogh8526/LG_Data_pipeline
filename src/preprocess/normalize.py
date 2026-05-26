@@ -200,6 +200,33 @@ def normalize_core(core: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]
     return out, failures
 
 
+def normalize_dpm_row(
+    dpm_fields: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """D-012 — dev_part_master 필드 dict 정규화.
+
+    팀원 컬럼명(part_no_new 등)을 normalization.yaml의 rule key(part_no 등)로
+    역매핑한 뒤 normalize_value를 호출하고, 결과를 다시 dpm 컬럼명으로 기록.
+
+    Returns:
+        (정규화된 dpm dict, {dpm_column: fail_reason}).
+    """
+    from src.db._mapping import CORE_TO_DEV_PART_MASTER
+
+    # dpm 컬럼 → Core 13 rule key
+    dpm_to_rule = {v: k for k, v in CORE_TO_DEV_PART_MASTER.items()}
+
+    out: dict[str, Any] = {}
+    failures: dict[str, str] = {}
+    for dpm_key, value in dpm_fields.items():
+        rule_key = dpm_to_rule.get(dpm_key, dpm_key)
+        res = normalize_value(value, rule_key)
+        out[dpm_key] = res.value
+        if not res.success and res.fail_reason:
+            failures[dpm_key] = res.fail_reason
+    return out, failures
+
+
 def normalize_semantic(semantic: dict[str, str]) -> dict[str, str]:
     """자유텍스트 dict: NFC + strip + collapse_whitespace만 적용."""
     out: dict[str, str] = {}

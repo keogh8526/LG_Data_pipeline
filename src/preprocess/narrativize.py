@@ -1,9 +1,9 @@
-"""v2.0 (D-011 Phase F 후) — 결정론적 narrativizer.
+"""v2.0 (D-012) — 결정론적 narrativizer.
 
-core dict → 자연어 4~6문장. LLM 호출 0회. payload는 사용 안 함 (이전 6 조건절
-trigger 모두 제거됨).
+dev_part_master_fields dict + extra_fields → 자연어 4~6문장. LLM 호출 0회.
 
-행 1개당 narrative_text 1개 생성. 검색 임베딩(narrative_emb) 소스.
+D-011 Phase F: payload 조건절 6개 trigger 제거됨.
+D-012: 입력 변경 — core(우리) → dev_part_master_fields(팀원 컬럼명).
 """
 
 from __future__ import annotations
@@ -41,38 +41,36 @@ def _fill_clause(template: str, vars_: dict[str, Any]) -> str:
         return ""
 
 
-def narrativize(
-    core: dict[str, Any],
-    payload: dict[str, Any] | None = None,  # 호환성 유지 (인자만 받고 미사용)
+def build_narrative(
+    dpm_fields: dict[str, Any],
+    extra_fields: dict[str, Any] | None = None,
 ) -> str:
-    """Core → 자연어 narrative_text.
-
-    D-011 Phase F: payload trigger 6개(drbfm/hsms/mold/test/supplier/nonstd) 제거.
-    핵심 절(part_meta/model_meta/base_part/change_point/change_reason/stage)만 조립.
+    """dev_part_master 필드 → 자연어 narrative_text.
 
     Args:
-        core: 정규화된 Core dict.
-        payload: 호환성 유지를 위한 인자 (D-011 후 미사용).
+        dpm_fields: DevPartMaster 컬럼명 dict (part_no_new, event, change_point_raw 등).
+        extra_fields: grade / event_stage 등이 들어있는 보조 dict.
 
     Returns:
         자연어 string. 빈 입력은 짧은 문장만 반환.
     """
+    extra = extra_fields or {}
     tmpl = _templates()
     clauses = tmpl.get("clauses", {})
     change_type_korean = tmpl.get("change_type_korean", {})
     stage_korean = tmpl.get("event_stage_korean", {})
 
     vars_: dict[str, Any] = {
-        "part_no": core.get("part_no", ""),
-        "part_name": core.get("part_name", ""),
-        "bom_level": core.get("bom_level"),
-        "part_type": core.get("part_type"),
-        "new_model_code": core.get("new_model_code", ""),
-        "region": core.get("region"),
-        "grade": core.get("grade"),
-        "base_part_no": core.get("base_part_no"),
-        "change_point": core.get("change_point"),
-        "change_reason": core.get("change_reason"),
+        "part_no": dpm_fields.get("part_no_new", ""),
+        "part_name": dpm_fields.get("part_name", ""),
+        "bom_level": dpm_fields.get("bom_depth"),
+        "part_type": dpm_fields.get("part_type"),
+        "new_model_code": dpm_fields.get("new_model", ""),
+        "region": dpm_fields.get("region"),
+        "grade": extra.get("grade"),
+        "base_part_no": dpm_fields.get("part_no_base"),
+        "change_point": dpm_fields.get("change_point_raw"),
+        "change_reason": dpm_fields.get("change_reason_raw"),
     }
 
     part_meta = _fill_clause(clauses.get("part_meta_clause", ""), vars_)
@@ -81,10 +79,10 @@ def narrativize(
     change_point_c = _fill_clause(clauses.get("change_point_clause", ""), vars_)
     change_reason_c = _fill_clause(clauses.get("change_reason_clause", ""), vars_)
 
-    ct = str(core.get("change_type", "")).strip()
+    ct = str(dpm_fields.get("event", "") or "").strip()
     change_type_phrase = change_type_korean.get(ct, ct)
 
-    es = str(core.get("event_stage", "")).strip()
+    es = str(extra.get("event_stage", "") or "").strip()
     stage_phrase = stage_korean.get(es)
     stage_clause = (
         clauses.get("stage_clause", "").format(event_stage_korean=stage_phrase)
@@ -119,3 +117,28 @@ def narrativize(
     narrative = " ".join(s for s in sentence_pieces if s).strip()
     narrative = re.sub(r"\s+", " ", narrative)
     return narrative
+
+
+# Backwards-compat shim — old callers passed (core, payload).
+def narrativize(
+    core_or_dpm: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> str:
+    """Compat shim — accepts either old (core, payload) or new (dpm_fields).
+
+    Heuristic: if any of part_no_new / change_point_raw / event keys is present,
+    treat as dpm_fields and ignore the second arg. Otherwise map core → dpm.
+    """
+    if any(k in core_or_dpm for k in ("part_no_new", "change_point_raw", "event", "new_model")):
+        return build_narrative(core_or_dpm, payload)
+    # Legacy core dict — translate to dpm names on the fly.
+    from src.db._mapping import CORE_TO_DEV_PART_MASTER
+
+    dpm: dict[str, Any] = {}
+    extra: dict[str, Any] = {}
+    for k, v in core_or_dpm.items():
+        if k in CORE_TO_DEV_PART_MASTER:
+            dpm[CORE_TO_DEV_PART_MASTER[k]] = v
+        elif k in {"grade", "event_stage"}:
+            extra[k] = v
+    return build_narrative(dpm, extra)
