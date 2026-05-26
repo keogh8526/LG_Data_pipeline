@@ -5621,8 +5621,26 @@ with st.container():
                 st.session_state["ppt_extraction_name"] = ppt_up_final.name
                 _pm = (ppt_result or {}).get("project_meta") or {}
                 st.session_state["dev_grade"] = str(_pm.get("dev_grade") or st.session_state.get("dev_grade", "B") or "B").strip().upper()
+
+                # D-012 fix: 원본은 PPT에서 base_model/target_model 추출해도 session_state에
+                # 안 채워서 화면 input이 비어 보임. 추출값을 명시적으로 wire-up.
+                _ppt_base = str(_pm.get("base_model") or _pm.get("source_model") or "").strip()
+                _ppt_target = str(_pm.get("target_model") or "").strip()
+                if _ppt_base and not st.session_state.get("bom_model"):
+                    st.session_state["bom_model"] = _ppt_base
+                if _ppt_target:
+                    st.session_state["target_model"] = _ppt_target
+                # 부가 메타도 같이 wire-up (있으면)
+                for _k in ("product_type", "target_country", "rating"):
+                    _v = str(_pm.get(_k) or "").strip()
+                    if _v:
+                        st.session_state[_k] = _v
+
                 st.session_state["_show_project_input_review"] = True
-                st.success("✅ 모델 정보 확인 완료 (PPT 추출 포함)")
+                st.success(
+                    f"✅ 모델 정보 확인 완료 — Base: {st.session_state.get('bom_model','')} / "
+                    f"Target: {st.session_state.get('target_model','(미추출)')}"
+                )
             except Exception as e:
                 st.error(f"⚠️ 모델 정보 확인 실패(PPT 추출): {e}")
 
