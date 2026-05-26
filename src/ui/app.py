@@ -5548,14 +5548,44 @@ with st.container():
             st.session_state["base_df_raw"] = df_bom.copy()
             st.session_state["bom_uploaded"] = True
 
-            pno_col = pick_col(df_bom, ["P/NO","P/NO.","Part No","품번"])
+            # D-012: bom_model 자동 추출. 첫 데이터 row(Lvl=0 또는 그 근처)에서
+            # P/NO 컬럼 값을 보고 9자리 model core를 뽑음. 못 찾으면 추가 시도:
+            #   1) Part No 컬럼명의 모든 variant (P/no., 품번, 부품번호 등)
+            #   2) 첫 5행에서 .iloc[i]['P/NO']에 model 토큰 발견되는 첫 값
+            #   3) chatbot_flow._detect_model_from_bom 백업
+            pno_col = pick_col(df_bom, [
+                "P/NO", "P/NO.", "P/no.", "Part No", "Part No.",
+                "PartNo", "PNO", "품번", "부품번호",
+            ])
+            detected_model = ""
             if pno_col:
-                first_pno = str(df_bom.iloc[0].get(pno_col, "")).strip()
-                model_info = extract_model_code(first_pno)
-                if model_info.get("core9"):
-                    st.session_state["bom_model"] = model_info["core9"]
-                else:
-                    st.session_state["bom_model"] = first_pno.split(".")[0] if "." in first_pno else first_pno
+                # 첫 5행 스캔 — root row가 첫 row 아닐 수도 있음
+                for i in range(min(5, len(df_bom))):
+                    cand_pno = str(df_bom.iloc[i].get(pno_col, "")).strip()
+                    if not cand_pno:
+                        continue
+                    info = extract_model_code(cand_pno)
+                    if info.get("core9"):
+                        detected_model = info["core9"]
+                        break
+                    # core9 없으면 . 앞 부분 fallback
+                    if "." in cand_pno and not detected_model:
+                        detected_model = cand_pno.split(".")[0]
+            # 그래도 없으면 chatbot_flow의 detection 시도
+            if not detected_model:
+                try:
+                    from chatbot_flow import _detect_model_from_bom
+                    detected_model = _detect_model_from_bom(df_bom) or ""
+                except Exception:
+                    pass
+            if detected_model:
+                st.session_state["bom_model"] = detected_model
+            else:
+                # 디버그: 어떤 컬럼/값이 있어서 못 잡았는지 표시
+                st.warning(
+                    f"⚠️ Base 모델 자동 추출 실패. P/NO 컬럼 = {pno_col!r}. "
+                    f"수동 입력하시거나 BOM 첫 행 점검 필요."
+                )
 
             snap = make_base_snapshot(df_bom, uploaded_bom.name)
             st.session_state["base_snapshot"] = snap
@@ -5868,11 +5898,10 @@ with st.container():
     # ── 🚀 분석 시작 버튼 ──
     st.divider()
 
-    ppt_confirmed = bool(st.session_state.get("ppt_input_confirmed"))
+    # D-012: 분석 시작 조건 완화 — PPT 확인 + target_model 둘 다 optional로.
+    # 최소 필수는 BOM 업로드 + 변경점 입력. PPT/target_model 있으면 정확도↑.
     can_start = (
         st.session_state.get("bom_uploaded")
-        and ppt_confirmed
-        and st.session_state.get("target_model")
         and len(st.session_state.get("change_items", [])) > 0
     )
 
