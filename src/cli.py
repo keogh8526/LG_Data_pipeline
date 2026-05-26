@@ -1,13 +1,12 @@
-"""v2.0 LG BOM 전처리 + 검색 CLI.
+"""D-012 LG BOM 전처리 CLI.
 
 ``python -m src.cli <command>``. 명령 그룹:
 
     inventory                      raw 디렉토리 → file_inventory.parquet
     classify                       시트 단위 양식 분류
-    schema-export                  Core 13 schema → JSON Schema export
     narrativize                    단일 행 narrative 미리보기 (디버그)
 
-    pipeline run [PATH]            classify→adapter→normalize→narrativize→validate
+    pipeline run [PATH]            classify→extract→normalize→narrativize→validate
                                    → dry_run/<run_id>/
     pipeline run --commit          + validation gate 통과 시 commit
     pipeline commit  --run-id ID   dry_run → committed
@@ -15,13 +14,13 @@
 
     quarantine list --run-id ID    격리된 행 조회
 
-    db init                        ORM 테이블 + (Postgres) schema.sql 적용
-    db load --run-id ID [--embed]  committed run → PG 적재
-    db rollback --run-id ID        DB 적재 원복
-    db status                      run 상태 조회
-    db verify --run-id ID          per-table count
-
-    search "<query>" [--top-k 5]   Query Router + Hybrid + RRF + Rerank + Graph
+    db init                        ORM 테이블 + (Postgres) schema_dev_part_master.sql
+    db load --run-id ID [--embed]  committed run → PG (source_files / ingestion_log /
+                                   dev_part_master). --embed: embedding_dense 생성.
+    db rollback --file-id ID       file_id 단위 DB 적재 원복 (CASCADE).
+    db status                      ingestion_log 상태 요약.
+    db verify [--file-id ID]       테이블별 카운트 출력.
+    db reset --confirm             전체 데이터 삭제 (개발용).
 """
 
 from __future__ import annotations
@@ -30,28 +29,27 @@ import json
 from pathlib import Path
 
 import typer
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from src.db.engine import init_db, make_engine, session_factory
 from src.db.load import load_run, update_embeddings
 from src.db.models import DevPartMaster, IngestionLog, SourceFile
-from src.db.rollback import rollback_run as db_rollback_run  # stub; rewritten in Phase 5
+from src.db.rollback import rollback_file
 from src.preprocess.classify import classify_dir, classify_file
 from src.preprocess.inventory import build_inventory
 from src.preprocess.pipeline import (
     COMMITTED_ROOT,
     commit_run,
     discover_raw_files,
-    generate_run_id,
     read_state,
     reprocess_quarantine,
     rollback_run,
     run_pipeline,
 )
 from src.preprocess.quarantine import list_quarantined
-from src.utils.paths import INTERIM_DIR, RAW_DIR, SCHEMA_JSON_PATH
+from src.utils.paths import INTERIM_DIR, RAW_DIR
 
-app = typer.Typer(help="LG BOM v2.0 전처리 + 검색 CLI.")
+app = typer.Typer(help="LG BOM D-012 전처리 CLI.")
 pipeline_app = typer.Typer(help="dry-run / commit / rollback 사이클.")
 quarantine_app = typer.Typer(help="격리된 행 조회.")
 db_app = typer.Typer(help="PostgreSQL 적재 / 롤백 / 상태.")
@@ -70,7 +68,7 @@ def inventory(
         INTERIM_DIR / "file_inventory.parquet", help="출력 parquet."
     ),
 ) -> None:
-    """Step 0 — raw 파일 인벤토리."""
+    """raw 파일 인벤토리."""
     df = build_inventory(raw_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output, index=False)
@@ -78,10 +76,6 @@ def inventory(
         typer.echo(f"No Excel files found under {raw_dir}.")
         return
     typer.echo(f"Inventory written to {output} ({len(df)} sheet rows).")
-    typer.echo("\nForm-version guess (per file):")
-    per_file = df.drop_duplicates("file_path")["form_version_guess"]
-    for version, count in per_file.value_counts().items():
-        typer.echo(f"  {version}: {count}")
 
 
 @app.command()
@@ -89,7 +83,7 @@ def classify(
     path: Path = typer.Argument(..., help="Excel 파일 또는 --all로 디렉토리."),
     all_files: bool = typer.Option(False, "--all", help="PATH를 디렉토리로 처리."),
 ) -> None:
-    """Step 1 — 시트 단위 양식 분류."""
+    """시트 단위 양식 분류."""
     if all_files or path.is_dir():
         results = classify_dir(path)
         counts: dict[str, int] = {}
@@ -107,7 +101,6 @@ def classify(
 
     result, sheet_results = classify_file(path)
     typer.echo(f"{path.name}: {result.form_version} (confidence={result.confidence})")
-    typer.echo("  per sheet:")
     for sc in sheet_results:
         typer.echo(
             f"    {sc.sheet_name}: {sc.form_id} ({sc.confidence:.2f}) "
@@ -115,20 +108,9 @@ def classify(
         )
 
 
-@app.command("schema-export")
-def schema_export(
-    output: Path = typer.Option(SCHEMA_JSON_PATH, help="JSON Schema 출력 경로."),
-) -> None:
-    """Core 13 + ChangeEvent schema → JSON Schema."""
-    from src.ontology.schema import export_schema_json
-
-    export_schema_json(output)
-    typer.echo(f"Schema exported to {output}.")
-
-
 @app.command()
 def narrativize(
-    part_no: str = typer.Option(..., help="새 부품번호 (예: AGG74419321)"),
+    part_no: str = typer.Option(..., help="새 부품번호"),
     part_name: str = typer.Option("샘플 부품", help="부품명"),
     change_point: str = typer.Option("", help="변경점 자유텍스트"),
     change_reason: str = typer.Option("", help="변경 사유"),
@@ -137,18 +119,18 @@ def narrativize(
     change_type: str = typer.Option("Change", help="New|Change|Carry-over"),
 ) -> None:
     """단일 row narrative 미리보기 (디버그용)."""
-    from src.preprocess.narrativize import narrativize as do_narr
+    from src.preprocess.narrativize import build_narrative
 
-    core = {
-        "part_no": part_no,
+    dpm = {
+        "part_no_new": part_no,
         "part_name": part_name,
-        "new_model_code": model_code,
-        "grade": grade,
-        "change_type": change_type,
-        "change_point": change_point or None,
-        "change_reason": change_reason or None,
+        "new_model": model_code,
+        "event": change_type,
+        "change_point_raw": change_point or None,
+        "change_reason_raw": change_reason or None,
     }
-    typer.echo(do_narr(core, payload={}))
+    extra = {"grade": grade}
+    typer.echo(build_narrative(dpm, extra))
 
 
 # --- pipeline sub-app ---------------------------------------------------
@@ -156,10 +138,10 @@ def narrativize(
 
 @pipeline_app.command("run")
 def pipeline_run(
-    path: Path = typer.Argument(RAW_DIR, help="Excel 파일 또는 디렉토리 (기본: data/raw)."),
+    path: Path = typer.Argument(RAW_DIR, help="Excel 파일 또는 디렉토리."),
     commit: bool = typer.Option(False, "--commit", help="validation 통과 시 commit."),
 ) -> None:
-    """Step 3~7 — full pipeline run."""
+    """full pipeline run (6 steps)."""
     files = discover_raw_files(path) if path.is_dir() else [path]
     if not files:
         typer.echo(f"No Excel files found under {path}.")
@@ -183,7 +165,7 @@ def pipeline_run(
 
 @pipeline_app.command("review")
 def pipeline_review(run_id: str = typer.Option(..., "--run-id")) -> None:
-    """run 상태 + report 경로 출력."""
+    """run state.json 출력."""
     state = read_state(run_id)
     if state is None:
         typer.echo(f"Unknown run_id: {run_id}")
@@ -244,7 +226,7 @@ def quarantine_reprocess(run_id: str = typer.Option(..., "--run-id")) -> None:
 
 @db_app.command("init")
 def db_init() -> None:
-    """ORM 테이블 + Postgres schema.sql 적용."""
+    """ORM 테이블 + (Postgres) schema_dev_part_master.sql 적용."""
     engine = make_engine()
     init_db(engine)
     typer.echo(f"Initialized {engine.url}.")
@@ -252,10 +234,13 @@ def db_init() -> None:
 
 @db_app.command("load")
 def db_load(
-    run_id: str = typer.Option(..., "--run-id"),
-    embed: bool = typer.Option(False, "--embed", help="multi-vector 임베딩까지 생성."),
+    run_id: str | None = typer.Option(None, "--run-id", help="committed run id"),
+    embed: bool = typer.Option(False, "--embed", help="embedding_dense 생성 (Ollama 필요)"),
 ) -> None:
-    """committed run → PostgreSQL."""
+    """committed run → PostgreSQL (source_files + ingestion_log + dev_part_master)."""
+    if not run_id:
+        typer.echo("--run-id required.")
+        raise typer.Exit(code=1)
     run_dir = COMMITTED_ROOT / run_id
     if not run_dir.exists():
         typer.echo(f"No committed run: {run_id}")
@@ -263,55 +248,89 @@ def db_load(
     engine = make_engine()
     Session = session_factory(engine)
     with Session() as session:
-        result = load_run(session, run_id, run_dir)
+        result = load_run(session, run_dir)
+        typer.echo(f"Loaded {run_id}: {result.rows_inserted}")
         if embed:
-            update_embeddings(session, run_id)
-    typer.echo(f"Loaded {run_id}: {result.rows_inserted}")
+            n = update_embeddings(session, file_ids=result.file_ids)
+            typer.echo(f"Embeddings updated: {n}")
 
 
 @db_app.command("rollback")
-def db_rollback(run_id: str = typer.Option(..., "--run-id")) -> None:
+def db_rollback(file_id: int = typer.Option(..., "--file-id")) -> None:
+    """file_id 단위 DB 적재 원복 (CASCADE)."""
     engine = make_engine()
     Session = session_factory(engine)
     with Session() as session:
-        result = db_rollback_run(session, run_id)
-    typer.echo(f"Rolled back {run_id}: {result.rows_deleted}")
+        try:
+            result = rollback_file(session, file_id)
+        except ValueError as exc:
+            typer.echo(f"Rollback failed: {exc}")
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"Rolled back file_id={file_id}: {result.rows_deleted}")
 
 
 @db_app.command("status")
 def db_status() -> None:
-    """ingestion_log 상태 요약 (D-012 Phase 6에서 본 구현 도입)."""
-    typer.echo("db status is being reworked for dev_part_master in Phase 6.")
+    """ingestion_log 상태별 집계."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        rows = session.execute(
+            select(IngestionLog.status, func.count())
+            .group_by(IngestionLog.status)
+        ).all()
+    if not rows:
+        typer.echo("No ingestion_log entries.")
+        return
+    for status, count in rows:
+        typer.echo(f"  {status or '(null)'}: {count}")
 
 
 @db_app.command("verify")
-def db_verify(file_id: int | None = typer.Option(None, "--file-id")) -> None:
-    """테이블별 카운트 출력 (D-012 Phase 6에서 본 구현 도입)."""
-    typer.echo("db verify is being reworked for dev_part_master in Phase 6.")
-
-
-# --- agent-search (BOM Agent retrieve 데모용 — D-011 후) ----------------
-
-
-@app.command("agent-search")
-def agent_search(
-    pno: str = typer.Option("", "--pno", help="부품번호 정확 매치 (part_no/base_part_no)."),
-    part_name: str = typer.Option("", "--part-name", help="부품명 ILIKE 매치."),
-    change_reason: str = typer.Option("", "--reason", help="변경사유 ILIKE 매치."),
-    top_k: int = typer.Option(30, "--top-k"),
+def db_verify(
+    file_id: int | None = typer.Option(None, "--file-id"),
 ) -> None:
-    """BOM Agent retrieve 노드가 호출할 단순 검색 데모.
+    """테이블별 row 카운트. --file-id 지정 시 해당 파일만."""
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        if file_id is None:
+            sf = session.execute(select(func.count()).select_from(SourceFile)).scalar_one()
+            log = session.execute(select(func.count()).select_from(IngestionLog)).scalar_one()
+            dpm = session.execute(select(func.count()).select_from(DevPartMaster)).scalar_one()
+            typer.echo(f"source_files: {sf}")
+            typer.echo(f"ingestion_log: {log}")
+            typer.echo(f"dev_part_master: {dpm}")
+            return
+        log = session.execute(
+            select(func.count())
+            .select_from(IngestionLog)
+            .where(IngestionLog.file_id == file_id)
+        ).scalar_one()
+        dpm = session.execute(
+            select(func.count())
+            .select_from(DevPartMaster)
+            .where(DevPartMaster.file_id == file_id)
+        ).scalar_one()
+        typer.echo(f"file_id {file_id}: ingestion_log={log}, dev_part_master={dpm}")
 
-    이전 v2.0 7-case Query Router + RRF + Rerank + Graph는 D-011 Phase D로
-    제거. 본 명령은 ``src/db/search_simple.py:search_change_events``의 thin wrapper.
-    """
-    # D-012: search_simple.py 삭제됨. dev_part_master 검색은 팀원 ETL_PG 측 RAG가
-    # 담당하며, 본 CLI는 적재 책임만 가짐. 임시 메시지만 출력.
-    typer.echo(
-        "agent-search was removed with the v2.0 search layer. "
-        "Use dev_part_master + bge-m3 directly via psql or the ETL_PG side."
-    )
-    raise typer.Exit(code=1)
+
+@db_app.command("reset")
+def db_reset(
+    confirm: bool = typer.Option(False, "--confirm", help="필수 확인 플래그"),
+) -> None:
+    """전체 데이터 삭제 (개발 편의용). 운영 환경 금지."""
+    if not confirm:
+        typer.echo("Refusing without --confirm.")
+        raise typer.Exit(code=1)
+    engine = make_engine()
+    Session = session_factory(engine)
+    with Session() as session:
+        session.execute(delete(DevPartMaster))
+        session.execute(delete(IngestionLog))
+        session.execute(delete(SourceFile))
+        session.commit()
+    typer.echo("All data deleted.")
 
 
 if __name__ == "__main__":

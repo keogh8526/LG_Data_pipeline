@@ -1,8 +1,4 @@
-"""v2.0 DB ORM smoke test — SQLite로 schema + load 사이클 검증.
-
-Postgres 전용 기능(JSONB GIN, vector, pg_trgm)은 schema.sql에 있고 본 테스트는
-스킵 — SQLite는 JSON column으로 fallback.
-"""
+"""D-012 DB ORM smoke test — SQLite로 dev_part_master 적재 + 롤백 검증."""
 
 from __future__ import annotations
 
@@ -12,12 +8,12 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.db.engine import init_db, make_engine, session_factory
 from src.db.load import load_run
-from src.db.models import ChangeEvent, Part, PreprocessingRun
-from src.db.rollback import rollback_run
+from src.db.models import DevPartMaster, IngestionLog, SourceFile
+from src.db.rollback import rollback_file
 
 
 @pytest.fixture()
@@ -30,218 +26,157 @@ def session(tmp_path):
         yield s
 
 
-def _make_run_dir(tmp_path: Path, run_id: str) -> Path:
-    run_dir = tmp_path / "committed" / run_id
+def _write_committed_artifacts(
+    run_dir: Path,
+    row_records: list[dict] | None = None,
+    files: list[dict] | None = None,
+    logs: list[dict] | None = None,
+) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    rows = pd.DataFrame(
-        [
-            {
-                "part_no": "AGG74419321",
-                "part_name": "Packing",
-                "base_part_no": "AGG74419320",
-                "base_model_code": "WSED7667M",
-                "new_model_code": "WSED7667M.ABMQEUR",
-                "grade": "Best-1",
-                "region": "EUR",
-                "change_type": "Change",
-                "event_stage": "DV",
-                "change_point": "내열 220→240",
-                "change_reason": "신규 규제",
-                "bom_level": 1,
-                "part_type": "Assy",
-                "extra_fields": json.dumps({"공통 > 부품 P/No": "AGG74419321"}),
-                "narrative_text": "변경부품 AGG74419321...",
-                "form_version": "변경부품_list_96",
-                "source_file": "x.xlsx",
-                "source_sheet": "변경부품 list",
-                "source_row": 5,
-                "run_id": run_id,
-                "confidence": 1.0,
-                "needs_review": False,
-            }
-        ]
+    files = files or [
+        {
+            "file_path": "/abs/x.xlsx",
+            "file_name": "x.xlsx",
+            "file_hash": "h_xlsx_1",
+            "file_size": 100,
+            "region": "EUR",
+        }
+    ]
+    logs = logs or [
+        {
+            "file_name": "x.xlsx",
+            "sheet_name": "변경부품 list",
+            "form_id": "changing_parts_list_96",
+            "rows_total": len(row_records or []),
+            "rows_inserted": len(row_records or []),
+            "status": "ok",
+            "error_message": None,
+        }
+    ]
+    (run_dir / "files.json").write_text(
+        json.dumps(files, ensure_ascii=False), encoding="utf-8"
     )
-    rows.to_parquet(run_dir / "rows.parquet", index=False)
-    return run_dir
+    (run_dir / "ingestion_log.json").write_text(
+        json.dumps(logs, ensure_ascii=False), encoding="utf-8"
+    )
+    if row_records:
+        df = pd.DataFrame(row_records)
+        # extra_fields를 JSON 문자열로 직렬화 (pipeline.py와 동일 처리)
+        if "extra_fields" in df.columns:
+            df["extra_fields"] = df["extra_fields"].apply(
+                lambda v: json.dumps(v, ensure_ascii=False) if v is not None else None
+            )
+        df.to_parquet(run_dir / "rows.parquet", index=False)
 
 
-def test_load_and_rollback_cycle(session, tmp_path):
-    run_id = f"run_{uuid.uuid4().hex[:8]}"
-    run_dir = _make_run_dir(tmp_path, run_id)
-
-    result = load_run(session, run_id, run_dir)
-    assert result.rows_inserted["change_events"] == 1
-    assert result.rows_inserted["parts"] >= 1
-    assert result.rows_inserted["models"] >= 1
-
-
-# ── C-3 회귀: quarantine 행은 DB에 적재되면 안 됨 ──
-
-
-def _make_run_dir_with_quarantine(tmp_path, run_id: str):
-    """1 clean + 2 quarantine 행을 가진 rows.parquet 생성."""
-    run_dir = tmp_path / "committed" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    base_record = {
-        "part_no": "AGG74419321",
+def _base_row(**overrides):
+    base = {
+        "part_no_new": "AGG74419321",
         "part_name": "Packing",
-        "base_part_no": "AGG74419320",
-        "base_model_code": "WSED7667M",
-        "new_model_code": "WSED7667M.ABMQEUR",
-        "grade": "Best-1",
+        "part_no_base": "AGG74419320",
+        "base_model": "WSED7667M",
+        "new_model": "WSED7667M.ABMQEUR",
         "region": "EUR",
-        "change_type": "Change",
-        "event_stage": "DV",
-        "change_point": "내열 220→240",
-        "change_reason": "신규 규제",
-        "bom_level": 1,
+        "event": "Change",
+        "change_point_raw": "내열 220→240",
+        "change_reason_raw": "신규 규제",
+        "bom_depth": 1,
+        "bom_level_raw": "1",
         "part_type": "Assy",
-        "extra_fields": json.dumps({"공통 > 부품 P/No": "AGG74419321"}),
-        "narrative_text": "변경부품 AGG...",
-        "form_version": "변경부품_list_96",
+        "qty_new": 1.0,
+        "extra_fields": {"grade": "Best-1", "event_stage": "DV"},
+        "embedding_text": "변경부품 AGG74419321...",
+        "form_id": "changing_parts_list_96",
         "source_file": "x.xlsx",
         "source_sheet": "변경부품 list",
         "source_row": 5,
-        "run_id": run_id,
-        "confidence": 1.0,
-        "needs_review": False,
+        "_quarantine_reason": None,
     }
-    rows = pd.DataFrame(
-        [
-            {**base_record, "_quarantine_reason": None, "source_row": 5},
-            {
-                **base_record,
-                "_quarantine_reason": "part_no=axiom failed",
-                "source_row": 6,
-                "part_no": "INVALID",
-                "needs_review": True,
-            },
-            {
-                **base_record,
-                "_quarantine_reason": "change_type=unknown",
-                "source_row": 7,
-                "part_no": "AGG74419999",
-                "needs_review": True,
-            },
-        ]
+    base.update(overrides)
+    return base
+
+
+def test_load_inserts_all_three_tables(session, tmp_path):
+    run_dir = tmp_path / "committed" / f"run_{uuid.uuid4().hex[:8]}"
+    _write_committed_artifacts(run_dir, row_records=[_base_row()])
+
+    result = load_run(session, run_dir)
+    assert result.rows_inserted == {
+        "source_files": 1,
+        "ingestion_log": 1,
+        "dev_part_master": 1,
+    }
+    sf = session.execute(select(func.count()).select_from(SourceFile)).scalar_one()
+    log = session.execute(select(func.count()).select_from(IngestionLog)).scalar_one()
+    dpm = session.execute(select(func.count()).select_from(DevPartMaster)).scalar_one()
+    assert (sf, log, dpm) == (1, 1, 1)
+
+    sample = session.execute(select(DevPartMaster)).scalar_one()
+    assert sample.part_no_new == "AGG74419321"
+    assert sample.extra_fields == {"grade": "Best-1", "event_stage": "DV"}
+    assert sample.embedding_text.startswith("변경부품")
+
+
+def test_quarantine_rows_excluded(session, tmp_path):
+    """_quarantine_reason 있는 행은 dev_part_master에 들어가지 않는다."""
+    run_dir = tmp_path / "committed" / f"run_{uuid.uuid4().hex[:8]}"
+    _write_committed_artifacts(
+        run_dir,
+        row_records=[
+            _base_row(),
+            _base_row(part_no_new="INVALID", _quarantine_reason="part_no=axiom failed"),
+        ],
     )
-    rows.to_parquet(run_dir / "rows.parquet", index=False)
-    return run_dir
+    result = load_run(session, run_dir)
+    assert result.rows_inserted["dev_part_master"] == 1
 
 
-def test_quarantine_rows_excluded_from_db_load(session, tmp_path):
-    """C-3: rows.parquet에 _quarantine_reason 있는 행은 적재 제외."""
-    run_id = f"run_{uuid.uuid4().hex[:8]}"
-    run_dir = _make_run_dir_with_quarantine(tmp_path, run_id)
+def test_file_hash_dedup_avoids_duplicate_source_files(session, tmp_path):
+    """동일 file_hash 두 번 적재해도 source_files는 1행만."""
+    run1 = tmp_path / "committed" / "run1"
+    run2 = tmp_path / "committed" / "run2"
+    _write_committed_artifacts(run1, row_records=[_base_row()])
+    _write_committed_artifacts(run2, row_records=[_base_row(source_row=7)])
 
-    result = load_run(session, run_id, run_dir)
-    # 3 행 중 quarantine 2 제외 → 1만 적재
-    assert result.rows_inserted["change_events"] == 1, (
-        f"expected only clean rows loaded, got {result.rows_inserted}"
+    load_run(session, run1)
+    load_run(session, run2)
+
+    sf = session.execute(select(func.count()).select_from(SourceFile)).scalar_one()
+    log = session.execute(select(func.count()).select_from(IngestionLog)).scalar_one()
+    dpm = session.execute(select(func.count()).select_from(DevPartMaster)).scalar_one()
+    assert sf == 1  # dedup
+    assert log == 2  # 매 run마다 추가
+    assert dpm == 2
+
+
+def test_rollback_file_cascades_to_log_and_dpm(session, tmp_path):
+    run_dir = tmp_path / "committed" / "r1"
+    _write_committed_artifacts(
+        run_dir, row_records=[_base_row(), _base_row(source_row=6)]
     )
-    # DB에 실제 1행만
-    loaded = session.execute(
-        select(ChangeEvent).where(ChangeEvent.run_id == run_id)
-    ).scalars().all()
-    assert len(loaded) == 1
-    assert loaded[0].part_no == "AGG74419321"
+    result = load_run(session, run_dir)
+    file_id = result.file_ids[0]
+
+    rb = rollback_file(session, file_id)
+    assert rb.rows_deleted == {
+        "source_files": 1,
+        "ingestion_log": 1,
+        "dev_part_master": 2,
+    }
+    # 전체 0
+    assert session.execute(select(func.count()).select_from(SourceFile)).scalar_one() == 0
+    assert session.execute(select(func.count()).select_from(IngestionLog)).scalar_one() == 0
+    assert session.execute(select(func.count()).select_from(DevPartMaster)).scalar_one() == 0
 
 
-# ── B-2 회귀: BomEdge FK + UNKNOWN Model 자동 upsert ──
+def test_rollback_unknown_file_id_raises(session):
+    with pytest.raises(ValueError, match="unknown file_id"):
+        rollback_file(session, 99999)
 
 
-# ── B-3 회귀: update_embeddings UPDATE가 COALESCE로 None 보호 ──
-# D-011: multi-vector 5개 → narrative_emb 단일 벡터로 축소.
+def test_legacy_rollback_run_raises_not_implemented(session):
+    """D-012: run_id 기반 롤백은 사라짐. 호출 시 NotImplementedError."""
+    from src.db.rollback import rollback_run
 
-
-def test_update_embeddings_sql_uses_coalesce():
-    """B-3 (D-011 후): update_embeddings의 UPDATE SQL이 COALESCE 사용."""
-    import inspect
-
-    from src.db import load as load_module
-
-    src = inspect.getsource(load_module.update_embeddings)
-    assert "COALESCE(CAST(:vec AS vector), narrative_emb)" in src, (
-        "update_embeddings must use COALESCE for narrative_emb (B-3 fix). "
-        "Otherwise None vectors overwrite existing data on re-run."
-    )
-
-
-def test_bom_edges_with_unknown_model_creates_model_row(session, tmp_path):
-    """B-2: BOM 어댑터가 model_code='' fallback일 때 UNKNOWN Model 자동 upsert.
-
-    BomEdge FK 명시 후, parts에 없는 P/No 또는 models에 없는 model_code는 적재 실패.
-    'UNKNOWN'은 BOM 어댑터가 model 정보 없을 때 사용하는 sentinel — load.py가 자동 upsert.
-    """
-    run_id = f"run_{uuid.uuid4().hex[:8]}"
-    run_dir = tmp_path / "committed" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    # rows.parquet — 최소 1 clean event
-    rows_df = pd.DataFrame(
-        [
-            {
-                "part_no": "AGG74419321",
-                "part_name": "Packing",
-                "base_part_no": None,
-                "base_model_code": None,
-                "new_model_code": "WSED7667M",
-                "grade": "Best-1",
-                "region": "EUR",
-                "change_type": "Change",
-                "event_stage": "DV",
-                "change_point": "x",
-                "change_reason": "y",
-                "bom_level": 1,
-                "part_type": "Assy",
-                "extra_fields": json.dumps({"공통 > 부품 P/No": "AGG74419321"}),
-                "narrative_text": "narrative",
-                "form_version": "변경부품_list_96",
-                "source_file": "x.xlsx",
-                "source_sheet": "변경부품 list",
-                "source_row": 5,
-                "run_id": run_id,
-                "confidence": 1.0,
-                "needs_review": False,
-                "_quarantine_reason": None,
-            }
-        ]
-    )
-    rows_df.to_parquet(run_dir / "rows.parquet", index=False)
-
-    # bom.parquet — model_code=UNKNOWN fallback이 들어간 edge
-    bom_df = pd.DataFrame(
-        [
-            {
-                "model_code": "UNKNOWN",
-                "parent_part_no": "AGP0000001",
-                "child_part_no": "AGP0000002",
-                "qty": 1.0,
-                "bom_level": 2,
-                "run_id": run_id,
-            }
-        ]
-    )
-    bom_df.to_parquet(run_dir / "bom.parquet", index=False)
-
-    # 적재 — FK 만족해야 성공
-    result = load_run(session, run_id, run_dir)
-    assert result.rows_inserted["bom_edges"] == 1
-    # UNKNOWN Model이 자동 생성됐는지
-    from src.db.models import Model
-
-    unknown = session.get(Model, "UNKNOWN")
-    assert unknown is not None, "UNKNOWN Model should be auto-upserted by B-2"
-
-    # 적재 확인
-    events = session.execute(select(ChangeEvent).where(ChangeEvent.run_id == run_id)).scalars().all()
-    assert len(events) == 1
-    assert events[0].part_no == "AGG74419321"
-
-    # rollback
-    rb = rollback_run(session, run_id)
-    assert rb.rows_deleted["change_events"] == 1
-    remaining = session.execute(select(ChangeEvent).where(ChangeEvent.run_id == run_id)).scalars().all()
-    assert remaining == []
-
-    run_row = session.get(PreprocessingRun, run_id)
-    assert run_row is not None and run_row.status == "rolled_back"
+    with pytest.raises(NotImplementedError):
+        rollback_run(session, "some_run_id")
