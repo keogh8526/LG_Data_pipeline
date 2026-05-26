@@ -6017,11 +6017,22 @@ with st.container():
 
         _set(85, "🧩 제안 생성 및 병합 중...")
         proposal_t0 = _time.perf_counter()
-        proposals_raw = generate_proposals_from_docs(
-            search_result.get("primary_docs", []),
-            ss.get("base_snapshot") or {},
-            change_items,
-        )
+        # D-012: v2 단순화 proposal generator를 default로 사용. 환경변수
+        # USE_V2_PROPOSALS=0이면 옛 generate_proposals_from_docs로 fallback.
+        import os as _os_v2
+        if _os_v2.environ.get("USE_V2_PROPOSALS", "1") == "1":
+            from src.ui._proposals_v2 import generate_proposals_from_hits
+            proposals_raw = generate_proposals_from_hits(
+                search_result.get("primary_docs", []),
+                ss.get("base_snapshot") or {},
+                change_items,
+            )
+        else:
+            proposals_raw = generate_proposals_from_docs(
+                search_result.get("primary_docs", []),
+                ss.get("base_snapshot") or {},
+                change_items,
+            )
         all_proposals = merge_proposals_order_independent(proposals_raw)
         step_sec["proposal"] = round(_time.perf_counter() - proposal_t0, 3)
 
