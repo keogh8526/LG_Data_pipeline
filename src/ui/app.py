@@ -3722,32 +3722,34 @@ def generate_proposals_from_docs(primary_docs, base_snapshot, change_items):
     # ═══════════════════════════════════════════════════
     def classify_by_rsn(rsn, desc="", chg=""):
         r = (rsn or chg or "").strip().lower()
-
-        # RSN이 비어있거나 nan → 제외
-        if not r or r == "nan":
-            return "EXCLUDE"
-
-        # CORE: RSN에 핵심 키워드 중 하나라도 포함
-        if any(_kw_match(r, kw) for kw in core_keywords):
-            return "CORE"
-        # desc에 핵심 키워드가 있으면 CORE (RSN이 짧은 경우 보완)
         d = (desc or "").lower()
         c = (chg or "").lower()
+
+        # D-012: RSN/CHG가 비어있어도 desc에 변경점 키워드가 매치되면
+        # CORE/CASCADE로 인정. 원본은 RSN 없으면 무조건 EXCLUDE라 BOM
+        # 부품/마스터처럼 변경 이력 컬럼이 없는 doc은 모두 떨어졌음.
+
+        # 1) CORE: rsn / desc / chg 중 어디든 core 키워드 매치
+        if any(_kw_match(r, kw) for kw in core_keywords if r):
+            return "CORE"
         if any(_kw_match(d, kw) for kw in core_keywords):
             return "CORE"
         if any(_kw_match(c, kw) for kw in core_keywords):
             return "CORE"
 
-        # CASCADE: RSN에 target 키워드 포함
-        if any(_kw_match(r, kw) for kw in target_keywords):
+        # 2) CASCADE: target 키워드 매치
+        if any(_kw_match(r, kw) for kw in target_keywords if r):
             return "CASCADE"
-        # RSN이 짧은 경우 desc 타깃 키워드도 허용
         if any(_kw_match(d, kw) for kw in target_keywords):
             return "CASCADE"
         if any(_kw_match(c, kw) for kw in target_keywords):
             return "CASCADE"
 
-        # 어디에도 해당 안 됨 → 제외
+        # 3) RSN/CHG 모두 비어있는 doc도 desc에 query_tokens 매치되면 CASCADE
+        # (변경 이력 없는 BOM 부품을 사용자 변경점 키워드로 회수)
+        if (not r) and any(_kw_match(d, kw) for kw in query_tokens):
+            return "CASCADE"
+
         return "EXCLUDE"
 
     # 변경점 텍스트와의 직접 연관성 검증 (정밀도 우선)
@@ -3962,6 +3964,31 @@ def generate_proposals_from_docs(primary_docs, base_snapshot, change_items):
     if recovered_doc_l1 or recovered_adaptive:
         st.session_state["_recover_doc_l1"] = recovered_doc_l1
         st.session_state["_recover_adaptive"] = recovered_adaptive
+
+    # D-012 진단: tier 분포 + intent를 _dbg.log에 박음
+    try:
+        from collections import Counter as _DbgCounter
+        from pathlib import Path as _DbgPath
+        from datetime import datetime as _DbgDt
+        _dbg_path = _DbgPath(__file__).resolve().parent / "_dbg.log"
+        _tier_dist = _DbgCounter(p.get("tier", "?") for p in db_parts)
+        with open(_dbg_path, "a", encoding="utf-8") as _df:
+            _df.write(
+                f"[{_DbgDt.now().isoformat(timespec='seconds')}] "
+                f"  proposal_parser: db_parts_total={len(db_parts)} "
+                f"tier_dist={dict(_tier_dist)} "
+                f"core_kw={sorted(core_keywords)[:10]} "
+                f"target_kw={sorted(target_keywords)[:10]} "
+                f"query_tokens={sorted(query_tokens)[:10]}\n"
+            )
+            # 첫 3개 row 샘플
+            for p in db_parts[:3]:
+                _df.write(
+                    f"    sample: tier={p.get('tier')} desc={p.get('desc','')[:50]!r} "
+                    f"rsn={p.get('rsn','')[:50]!r} chg={p.get('chg','')[:50]!r}\n"
+                )
+    except Exception:
+        pass
 
     db_parts = [p for p in db_parts if p.get("tier") != "EXCLUDE"]
     # ── 임시 디버그: 품번 없는 부품 확인 (확인 후 삭제!) ──
