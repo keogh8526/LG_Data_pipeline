@@ -22,38 +22,13 @@ def _checkmark(passed: bool) -> str:
 
 def _format_metrics_table(report: ValidationReport) -> str:
     rows = [
+        # D-011: referential_integrity 등 제거된 지표 빠짐.
         ("column_match", report.column_match, THRESHOLDS["column_match"], ">="),
         ("type_match", report.type_match, THRESHOLDS["type_match"], ">="),
-        (
-            "value_format_match",
-            report.value_format_match,
-            THRESHOLDS["value_format_match"],
-            ">=",
-        ),
-        (
-            "referential_integrity",
-            report.referential_integrity,
-            THRESHOLDS["referential_integrity"],
-            ">=",
-        ),
-        (
-            "row_preservation",
-            report.row_preservation,
-            THRESHOLDS["row_preservation"],
-            ">=",
-        ),
-        (
-            "null_rate_required",
-            report.null_rate_required,
-            THRESHOLDS["null_rate_required_max"],
-            "<=",
-        ),
-        (
-            "axiom_violation_rate",
-            report.axiom_violation_rate,
-            THRESHOLDS["axiom_violation_rate_max"],
-            "<=",
-        ),
+        ("value_format_match", report.value_format_match, THRESHOLDS["value_format_match"], ">="),
+        ("row_preservation", report.row_preservation, THRESHOLDS["row_preservation"], ">="),
+        ("null_rate_required", report.null_rate_required, THRESHOLDS["null_rate_required_max"], "<="),
+        ("axiom_violation_rate", report.axiom_violation_rate, THRESHOLDS["axiom_violation_rate_max"], "<="),
     ]
     lines = [
         "| Metric | Value | Threshold | Status |",
@@ -146,7 +121,7 @@ def build_markdown_report(
         lines.append(_format_file_section(source_path, validation, diff))
         lines.append("")
     lines.append("## Decision")
-    lines.append(f"**{decision}** — gate based on the 7 acceptance thresholds.")
+    lines.append(f"**{decision}** - gate based on the 6 acceptance thresholds (D-011 후).")
     if failures:
         lines.append("")
         lines.append("Failing metrics:")

@@ -213,9 +213,8 @@ class ChangeEvent(Base):
     bom_level: Mapped[int | None] = mapped_column(SmallInteger, default=None)
     part_type: Mapped[str | None] = mapped_column(String(50), default=None)
 
-    # ── Payload (양식 원본 100% 보존) ──
-    payload: Mapped[dict] = mapped_column(_JSONB, nullable=False, default=dict)
-    semantic_text: Mapped[dict | None] = mapped_column(_JSONB, default=None)
+    # ── extra_fields (D-011: Core 13 매핑 안 된 컬럼만 JSONB로 보존) ──
+    extra_fields: Mapped[dict] = mapped_column(_JSONB, nullable=False, default=dict)
     form_version: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
     source_file: Mapped[str] = mapped_column(Text, nullable=False)
     source_sheet: Mapped[str] = mapped_column(Text, nullable=False)

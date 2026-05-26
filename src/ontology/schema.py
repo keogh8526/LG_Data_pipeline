@@ -163,21 +163,20 @@ class CoreFields(BaseModel):
 
 
 class ChangeEvent(BaseModel):
-    """한 행 = 하나의 ChangeEvent. Core + Payload + Narrative.
+    """한 행 = 하나의 ChangeEvent. Core + extra_fields + Narrative.
 
-    preprocessing_v2.md §4-2.
+    D-011 (B): payload(100% 보존) → extra_fields(Core 13 매핑 안 된 컬럼만)로 축소.
+    semantic_text는 narrative_text 생성 후 사용 안 되므로 제거.
 
     - core: Core 13필드 (타입 강제, PG 컬럼)
-    - payload: 양식 원본 컬럼 전부 (JSONB) — "검색에 안 써도 답변 컨텍스트로"
-    - semantic_text: 자유텍스트 raw (narrativize/embed 소스)
+    - extra_fields: Core 매핑되지 않은 원본 컬럼 (JSONB, 답변 시 LLM 컨텍스트로 활용 가능)
     - narrative_text: Step 5 narrativize 결과 (200~600 토큰)
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     core: CoreFields
-    payload: dict[str, Any] = Field(default_factory=dict)
-    semantic_text: dict[str, str] = Field(default_factory=dict)
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
     narrative_text: Optional[str] = None
 
     # Provenance

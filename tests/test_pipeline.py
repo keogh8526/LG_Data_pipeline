@@ -47,7 +47,7 @@ def test_changing_parts_extracted_into_events(isolated_data, fixture_workbooks):
     if rows_path.exists():
         df = pd.read_parquet(rows_path)
         assert "part_no" in df.columns
-        assert "payload" in df.columns
+        assert "extra_fields" in df.columns
         assert "narrative_text" in df.columns
         # narrative_text 채워졌는지
         assert df["narrative_text"].notna().any()

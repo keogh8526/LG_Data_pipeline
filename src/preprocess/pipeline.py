@@ -37,8 +37,9 @@ from src.preprocess.adapters import (
 # D-011: ProjectMeta 제거.
 from src.preprocess.classify import classify_file
 from src.preprocess.diff import DiffReport, diff_against_golden, load_golden
+from src.preprocess.column_dict import load_column_dictionary
 from src.preprocess.narrativize import narrativize
-from src.preprocess.normalize import normalize_core, normalize_semantic
+from src.preprocess.normalize import normalize_core
 from src.preprocess.quarantine import (
     extract_quarantined,
     list_quarantined,
@@ -137,20 +138,25 @@ def _process_extracted_rows(
     rows_in = len(rows)
     records: list[dict[str, Any]] = []
     quarantined = 0
+    cdict = load_column_dictionary()
 
     for row in rows:
         core_norm, fails = normalize_core(row.core)
-        semantic_norm = normalize_semantic(row.semantic)
+
+        # D-011 (B): extra_fields = Core 13에 매핑 안 된 원본 헤더만.
+        # column_dict.lookup이 매핑한 헤더는 제외 → 저장 공간 + 검증 비용 축소.
+        extra_fields: dict[str, Any] = {
+            header: value
+            for header, value in (row.payload or {}).items()
+            if cdict.lookup(header) is None
+        }
 
         # I-2: Pydantic CoreFields 검증 — 필수 필드 / enum / 정규식 통과 여부 확인.
-        # ValidationError는 ExtractedRow 단위 quarantine 사유로 누적.
-        # core_norm의 None 값도 Pydantic에 명시 전달 — validator가 None을 UNKNOWN/None으로
-        # 변환하도록. (이전: None 값을 제외하면 Pydantic이 "Field required" 오류 발생)
+        # core_norm의 None 값도 Pydantic에 명시 전달 (validator가 None을 UNKNOWN으로 변환).
         pydantic_reason: str | None = None
         try:
             CoreFields(**core_norm)
         except ValidationError as exc:
-            # 가장 첫 에러만 사유로 (전체 dump는 너무 길어 quarantine_reason 가독성 해침)
             err = exc.errors()[0] if exc.errors() else {}
             loc = ".".join(str(x) for x in err.get("loc", []))
             msg = err.get("msg", str(exc))
@@ -166,8 +172,7 @@ def _process_extracted_rows(
         narrative = narrativize(core_norm, row.payload)
         record = {
             **core_norm,
-            "payload": row.payload,
-            "semantic_text": semantic_norm,
+            "extra_fields": extra_fields,
             "narrative_text": narrative,
             "form_version": row.source_meta.get("form_version", form_id),
             "source_file": row.source_meta.get("source_file", file_path.name),
@@ -337,17 +342,16 @@ def run_pipeline(
     # 결과는 별도 parquet(`resolved.parquet`)로 저장 → load.py가 parts.aliases 등에 활용.
     resolution_summary = _run_entity_resolution(all_events, all_parts)
 
-    # persist — payload/semantic_text는 JSON-serialize해서 parquet schema 갈등 회피
+    # persist — extra_fields는 JSON-serialize해서 parquet schema 갈등 회피 (D-011 B)
     events_df = pd.DataFrame(all_events) if all_events else pd.DataFrame()
     bom_df = pd.DataFrame(all_parts + all_edges) if (all_parts or all_edges) else pd.DataFrame()
     if not events_df.empty:
-        for col in ("payload", "semantic_text"):
-            if col in events_df.columns:
-                events_df[col] = events_df[col].apply(
-                    lambda v: json.dumps(v, ensure_ascii=False, default=str)
-                    if v is not None
-                    else None
-                )
+        if "extra_fields" in events_df.columns:
+            events_df["extra_fields"] = events_df["extra_fields"].apply(
+                lambda v: json.dumps(v, ensure_ascii=False, default=str)
+                if v is not None
+                else None
+            )
         events_df.to_parquet(run_dir / "rows.parquet", index=False)
         if "_quarantine_reason" in events_df.columns:
             quarantined = events_df[events_df["_quarantine_reason"].notna()]

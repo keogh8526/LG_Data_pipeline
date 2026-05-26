@@ -99,8 +99,7 @@ def test_change_event_minimal():
     )
     ev = ChangeEvent(
         core=core,
-        payload={"공통 > 부품 P/No": "AGG74419321"},
-        semantic_text={},
+        extra_fields={"공통 > 부품 P/No": "AGG74419321"},
         form_version="변경부품_list_96",
         source_file="x.xlsx",
         source_sheet="변경부품 list",
@@ -108,7 +107,7 @@ def test_change_event_minimal():
         run_id="run_test",
     )
     assert ev.run_id == "run_test"
-    assert ev.payload["공통 > 부품 P/No"] == "AGG74419321"
+    assert ev.extra_fields["공통 > 부품 P/No"] == "AGG74419321"
 
 
 def test_export_schema_json(tmp_path):

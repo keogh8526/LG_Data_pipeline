@@ -232,8 +232,8 @@ def _ensure_models_for_bom(
 
 def _build_change_event(row: pd.Series, run_id: str) -> ChangeEvent:
     """parquet row → ChangeEvent ORM 객체."""
-    payload = _coerce_json(row.get("payload")) or {}
-    semantic = _coerce_json(row.get("semantic_text")) or {}
+    # D-011 (B): payload/semantic_text → extra_fields 단일 컬럼.
+    extra = _coerce_json(row.get("extra_fields")) or {}
     return ChangeEvent(
         part_no=row.get("part_no") if _present(row.get("part_no")) else None,
         part_name=row.get("part_name") if _present(row.get("part_name")) else None,
@@ -248,8 +248,7 @@ def _build_change_event(row: pd.Series, run_id: str) -> ChangeEvent:
         change_reason=row.get("change_reason") if _present(row.get("change_reason")) else None,
         bom_level=int(row["bom_level"]) if _present(row.get("bom_level")) else None,
         part_type=row.get("part_type") if _present(row.get("part_type")) else None,
-        payload=payload,
-        semantic_text=semantic or None,
+        extra_fields=extra,
         narrative_text=row.get("narrative_text") if _present(row.get("narrative_text")) else None,
         form_version=row.get("form_version", "unknown"),
         source_file=row.get("source_file", ""),
