@@ -177,9 +177,19 @@ def retrieve_docs(
             "rank_semantic": h.rank_semantic,
             "rank_lexical": h.rank_lexical,
         }
-        # dist = 거리 메트릭 (낮을수록 유사) — Chroma cosine distance와 의미 맞춤.
-        # RRF는 점수(높을수록 좋음)라 1 - score_rrf로 변환.
-        dist = 1.0 - (h.score_rrf or 0.0) if h.score_rrf is not None else None
+        # dist = Chroma cosine distance 호환 (낮을수록 유사, 0~1).
+        # UI(app.py)의 _doc_score_to_sim이 sim = 1 - dist로 변환해서 threshold
+        # 0.12~0.30과 비교 → semantic similarity(0~1)을 그대로 dist 변환에 사용.
+        # RRF(0.02~0.04)를 dist로 쓰면 sim이 0.96+이라 잘못 통과/fail되니 sem 사용.
+        sem = h.score_semantic
+        if sem is None:
+            # lexical만 있는 hit는 lex score를 fallback (0~1)
+            sem = h.score_lexical
+        if sem is None:
+            dist = 0.5
+        else:
+            # Clip 0~1 후 dist = 1 - sim
+            dist = max(0.0, min(1.0, 1.0 - float(sem)))
 
         out.append(
             {
