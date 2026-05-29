@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import typer
 from sqlalchemy import delete, func, select
@@ -34,7 +35,7 @@ from sqlalchemy import delete, func, select
 from src.db.engine import init_db, make_engine, session_factory
 from src.db.load import load_run, update_embeddings
 from src.db.models import DevPartMaster, IngestionLog, SourceFile
-from src.db.retrieve import hybrid_search, lexical_search, semantic_search
+from src.db.retrieve import Hit, hybrid_search, lexical_search, semantic_search
 from src.db.rollback import rollback_file
 from src.preprocess.classify import classify_dir, classify_file
 from src.preprocess.inventory import build_inventory
@@ -147,7 +148,7 @@ def pipeline_run(
     if not files:
         typer.echo(f"No Excel files found under {path}.")
         raise typer.Exit(code=1)
-    mode = "commit" if commit else "dry-run"
+    mode: Literal["dry-run", "commit"] = "commit" if commit else "dry-run"
     result = run_pipeline(files, mode=mode)
     typer.echo(f"Run {result.run_id} [{result.status}]")
     typer.echo(
@@ -340,7 +341,7 @@ retrieve_app = typer.Typer(help="dev_part_master 검색 (semantic / lexical / hy
 app.add_typer(retrieve_app, name="retrieve")
 
 
-def _print_hits(hits, mode: str) -> None:
+def _print_hits(hits: list[Hit], mode: str) -> None:
     if not hits:
         typer.echo(f"  (no hits — {mode})")
         return
@@ -436,6 +437,64 @@ def retrieve_hybrid(
     _print_hits(hits, "hybrid")
 
 
+# --- agent sub-app (L1~L4 E2E) -------------------------------------------
+
+agent_app = typer.Typer(help="BOM 변경 영향 분석 에이전트 (L1~L4 E2E).")
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("run")
+def agent_run(
+    text: str = typer.Argument(..., help="변경점/사유 자유텍스트."),
+    max_seeds: int = typer.Option(10, "--max-seeds"),
+) -> None:
+    """L1~L4 한 경로: 구조화 -> 회수+트리 -> 영향 판정 -> 문서 3종.
+
+    retrieval은 ENABLE_EMBEDDING=1 + Ollama 필요(없으면 seed 0개로 graceful).
+    """
+    from src.agent.docgen.generator import validate_doc
+    from src.agent.orchestrator.backend import DbRetrievalBackend
+    from src.agent.pipeline import run_agent
+    from src.agent.repository.bom import EdgeBomRepository
+
+    engine = make_engine()
+    Session = session_factory(engine)
+    backend = DbRetrievalBackend(Session)
+    with Session() as s:
+        out = run_agent(text, session=s, backend=backend, bom_repo=EdgeBomRepository(s))
+
+    ci = out.intent
+    typer.echo(
+        f"[L1] source={ci.source} conf={ci.confidence:.2f} "
+        f"part_nos={ci.part_nos} models={ci.models} region={ci.region}"
+    )
+    typer.echo(f"     queries={ci.rewritten_queries}")
+    orch = out.orchestration
+    typer.echo(
+        f"[L2] seeds={len(orch.seeds)} tree={len(orch.tree)} "
+        f"reflections={orch.reflections} tool_calls={orch.tool_calls}"
+    )
+    for v in out.verdicts[:max_seeds]:
+        typer.echo(
+            f"[L3] {(v.part_no or '?'):<14} {v.action:<7} {v.tier:<8} "
+            f"rules={','.join(f.rule_id for f in v.findings)}"
+        )
+    doc = out.doc
+    typer.echo(
+        f"[L4] changed={len(doc.changed_parts)} master={len(doc.dev_master_rows)} "
+        f"bom_diff={len(doc.bom_diff)} checklist={len(doc.checklist)}"
+    )
+    for r in doc.changed_parts[:max_seeds]:
+        typer.echo(f"     {r.pno_display:<14} {r.action:<7} {r.src}")
+    violations = validate_doc(doc)
+    if violations:
+        typer.echo(f"  [!] validation: {len(violations)} 위반")
+        for vio in violations[:10]:
+            typer.echo(f"    - {vio}")
+    else:
+        typer.echo("  validation: OK (모든 행 출처 보유, NEW=<발번대기>)")
+
+
 # --- app (Streamlit UI) launcher -----------------------------------------
 
 ui_app = typer.Typer(help="Streamlit BOM Agent UI launcher (src/ui/).")
@@ -476,7 +535,46 @@ def app_run(
         "--browser.gatherUsageStats", "false",
     ]
     typer.echo(f"Launching: {' '.join(cmd)}")
-    typer.echo(f"  → http://{host}:{port}")
+    typer.echo(f"  -> http://{host}:{port}")
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f"http://{host}:{port}")
+    subprocess.run(cmd, check=False)
+
+
+@ui_app.command("agent")
+def app_agent(
+    port: int = typer.Option(8502, "--port"),
+    host: str = typer.Option("localhost", "--host"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="브라우저 자동 열기."),
+) -> None:
+    """streamlit run src/ui/agent_app.py — L1~L4 변경 영향 분석 페이지.
+
+    requires 'ui' extra. 검색에 ENABLE_EMBEDDING(자동) + Ollama bge-m3 필요.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    page = Path(__file__).resolve().parent / "ui" / "agent_app.py"
+    if not page.exists():
+        typer.echo(f"agent_app not found: {page}")
+        raise typer.Exit(code=1)
+
+    creds_dir = Path.home() / ".streamlit"
+    creds_dir.mkdir(parents=True, exist_ok=True)
+    creds_file = creds_dir / "credentials.toml"
+    if not creds_file.exists():
+        creds_file.write_text('[general]\nemail = ""\n', encoding="utf-8")
+
+    cmd = [
+        sys.executable, "-m", "streamlit", "run", str(page),
+        "--server.port", str(port),
+        "--server.address", host,
+        "--server.headless", "true",
+        "--browser.gatherUsageStats", "false",
+    ]
+    typer.echo(f"Launching agent UI: http://{host}:{port}")
     if open_browser:
         import webbrowser
         webbrowser.open(f"http://{host}:{port}")

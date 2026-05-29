@@ -11,8 +11,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event, text
+from sqlalchemy import Connection, Engine, create_engine, event, text
+from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry
 
 from src.db.models import Base
 from src.utils.logging import get_logger
@@ -20,6 +22,29 @@ from src.utils.logging import get_logger
 log = get_logger(__name__)
 
 SCHEMA_SQL_PATH = Path(__file__).resolve().parent / "schema_dev_part_master.sql"
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+
+def _split_sql_statements(sql: str) -> list[str]:
+    """``--`` 주석 라인 제거 후 ``;`` 기준 statement 분리."""
+    no_comment_lines = "\n".join(
+        line for line in sql.splitlines() if not line.strip().startswith("--")
+    )
+    return [s.strip() for s in no_comment_lines.split(";") if s.strip()]
+
+
+def _apply_sql(conn: Connection, sql: str) -> None:
+    for stmt in _split_sql_statements(sql):
+        conn.execute(text(stmt))
+
+
+def _forward_migrations() -> list[Path]:
+    """이름순 forward 마이그레이션 (``*.rollback.sql`` 제외, 수동 실행 전용)."""
+    if not MIGRATIONS_DIR.is_dir():
+        return []
+    return sorted(
+        p for p in MIGRATIONS_DIR.glob("*.sql") if not p.name.endswith(".rollback.sql")
+    )
 
 
 def database_url() -> str:
@@ -42,7 +67,9 @@ def make_engine(url: str | None = None) -> Engine:
 
     if engine.dialect.name == "sqlite":
         @event.listens_for(engine, "connect")
-        def _enable_sqlite_fk(dbapi_conn, _record):  # noqa: ANN001
+        def _enable_sqlite_fk(
+            dbapi_conn: DBAPIConnection, _record: ConnectionPoolEntry
+        ) -> None:
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
             cur.close()
@@ -93,15 +120,11 @@ def init_db(engine: Engine) -> None:
         log.info("db.init.sqlite_only", dialect=engine.dialect.name)
         return
 
-    sql = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
-    # 주석 라인 먼저 제거 (라인이 '--'로 시작하는 경우).
-    # 단순 ';' split은 ';'를 만나는 위치에서 끊기는데, 주석이 statement 앞에
-    # 붙어있으면 strip 후 '--'로 시작하는 것처럼 보여 통째로 버려졌던 버그 수정.
-    no_comment_lines = "\n".join(
-        line for line in sql.splitlines() if not line.strip().startswith("--")
-    )
-    statements = [s.strip() for s in no_comment_lines.split(";") if s.strip()]
+    # base schema(4테이블) → forward 마이그레이션(가산 보조 테이블) 순서로 적용.
+    # 둘 다 idempotent(IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)이라 재실행 안전.
     with engine.begin() as conn:
-        for stmt in statements:
-            conn.execute(text(stmt))
+        _apply_sql(conn, SCHEMA_SQL_PATH.read_text(encoding="utf-8"))
+        for mig in _forward_migrations():
+            _apply_sql(conn, mig.read_text(encoding="utf-8"))
+            log.info("db.migration.applied", file=mig.name)
     log.info("db.init.done", dialect=engine.dialect.name)
